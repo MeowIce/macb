@@ -1,3 +1,10 @@
+# MeowIce's Advanced Chatlogging Bot
+# Copyright (c) 2026 MeowIce
+
+# Permission is granted to use, modify, and distribute this software for non-commercial purposes only.
+# Selling this software or any derivative works is prohibited without explicit written permission.
+# Removing or altering author credits is prohibited.
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -8,6 +15,11 @@ import sqlite3
 import asyncio
 import os
 import psutil
+# ==== CONFIG ====
+botToken = "YOUR_BOT_TOKEN"
+targetGuildId = 708718758616760339
+logChannelId = 879961838043922432
+# =================
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -20,9 +32,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 bot.totalScannedMessages = 0
 bot.globalOldestDate = None
 bot.bootTime = None
-
-targetGuildId = 708718758616760339
-logChannelId = 879961838043922432
 
 def initDatabase():
     try:
@@ -533,4 +542,4 @@ async def on_raw_message_edit(payload):
     
     await logChannel.send(embed=embedMessage)
 
-bot.run("YOUR_BOT_TOKEN")
+bot.run(botToken, log_handler=None)
