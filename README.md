@@ -1,4 +1,4 @@
-# MeowIce's Advanced ChatLogging Bot
+# MeowIce's Advanced Chatlogging Bot
 ## Một chiếc Bot theo dõi tin nhắn cực kỳ mạnh mẽ trên Discord !
 
 ## Giới thiệu
@@ -67,3 +67,7 @@ python bot.py
 ```
 
 Khi terminal hiển thị thông báo kết nối thành công, bot sẽ tự động chạy tiến trình đồng bộ dữ liệu chat.
+
+## Hỗ trợ
+- Discord: `@meowice`
+- MeowHouse: https://dsc.gg/meowsmp
