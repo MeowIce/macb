@@ -46,17 +46,13 @@ pip install discord.py aiohttp psutil
 Mở file `bot.py` và tiến hành thay thế ID tương ứng với thông tin server Discord của bạn:
 
 ```python
+botToken = "YOUR_BOT_TOKEN"
 targetGuildId = 708718758616760339
 logChannelId = 879961838043922432
 ```
+`botToken` là chỗ để điền token của bot  
 `targetGuildId` là ID server Dis cần theo dõi  
 `logChannelId` là ID kênh ở cái server đó để gửi notify vô.  
-
-Điền mã token bảo mật của bot vào dòng cuối cùng của file:
-
-```python
-bot.run("YOUR_BOT_TOKEN")
-```
 
 ### 4. Chạy bot
 
