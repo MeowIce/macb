@@ -15,11 +15,16 @@ import sqlite3
 import asyncio
 import os
 import psutil
+import time
+
 # ==== CONFIG ====
 botToken = "YOUR_BOT_TOKEN"
 targetGuildId = 708718758616760339
 logChannelId = 879961838043922432
+reportTaskSched = "hourly"
+alsoSendToLogChannel = True
 # =================
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -32,6 +37,13 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 bot.totalScannedMessages = 0
 bot.globalOldestDate = None
 bot.bootTime = None
+bot.hourlyNewMessages = 0
+bot.hourlyEditedMessages = 0
+bot.hourlyDeletedMessages = 0
+bot.loggerTaskStarted = False
+bot.currentBootScanned = 0
+bot.scanComplete = False
+bot.totalScanTimeStr = "Chưa có dữ liệu"
 
 def initDatabase():
     try:
@@ -60,6 +72,13 @@ def saveToDatabase(messageId, authorId, authorName, authorAvatar, channelId, con
     cursor.execute("""
         INSERT OR REPLACE INTO cached_messages VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (messageId, authorId, authorName, authorAvatar, channelId, content, attachmentUrl))
+    conn.commit()
+    conn.close()
+
+def deleteFromDatabase(messageId):
+    conn = sqlite3.connect("bot_log.db")
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM cached_messages WHERE messageId = ?", (messageId,))
     conn.commit()
     conn.close()
 
@@ -133,7 +152,7 @@ async def mediaDownloader(attachmentUrl):
                         break
             except Exception:
                 await asyncio.sleep(2 ** attempt)
-    return None
+        return None
 
 async def scanChannel(textChannel, semaphore):
     async with semaphore:
@@ -192,6 +211,7 @@ async def scanChannel(textChannel, semaphore):
                     url
                 ))
                 messageCount += 1
+                bot.currentBootScanned += 1
                 
             if oldestMessageId:
                 for dbId, dbData in dbMessagesDict.items():
@@ -211,10 +231,25 @@ async def scanChannel(textChannel, semaphore):
         return messageCount, oldestMessageDate, channelMessagesList, offlineEditsList, offlineDeletesList
 
 async def backgroundScanTask(targetGuild):
-    print("Đang nạp dữ liệu tin nhắn vào database...")
+    print("Đang nạp dữ liệu tin nhắn vào database... (quá trình này có thể mất vài giây hoặc vài phút).")
+    bot.currentBootScanned = 0
+    scanStartTime = time.perf_counter()
+    bot.scanComplete = False
+
+    async def reportProgress():
+        while not bot.scanComplete:
+            elapsedTime = time.perf_counter() - scanStartTime
+            currentSpeed = bot.currentBootScanned / elapsedTime if elapsedTime > 0 else 0
+            print(f"\rĐã nạp: {bot.currentBootScanned} tin nhắn | Tốc độ: {currentSpeed:.2f} tin nhắn/giây", end="", flush=True)
+            await asyncio.sleep(0.1)
+
+    reporterTask = asyncio.create_task(reportProgress())
     scanSemaphore = asyncio.Semaphore(10)
     channelTasks = [scanChannel(textChannel, scanSemaphore) for textChannel in targetGuild.text_channels]
     scanResults = await asyncio.gather(*channelTasks)
+    
+    bot.scanComplete = True
+    await reporterTask
     print()
     
     totalScannedMessages = 0
@@ -279,7 +314,14 @@ async def backgroundScanTask(targetGuild):
     bot.totalScannedMessages = totalScannedMessages
     bot.globalOldestDate = globalOldestDate
                 
-    print(f"Hoàn tất nạp {totalScannedMessages} tin nhắn")
+    finalElapsedTime = time.perf_counter() - scanStartTime
+    if finalElapsedTime >= 60:
+        finalMins, finalSecs = divmod(int(finalElapsedTime), 60)
+        bot.totalScanTimeStr = f"{finalMins} phút {finalSecs} giây"
+    else:
+        bot.totalScanTimeStr = f"{finalElapsedTime:.2f} giây"
+
+    print(f"Hoàn tất nạp {totalScannedMessages} tin nhắn trong {bot.totalScanTimeStr}")
     
     process = psutil.Process(os.getpid())
     ramBytes = process.memory_info().rss
@@ -293,6 +335,43 @@ async def backgroundScanTask(targetGuild):
         print("Thời gian tin nhắn cũ nhất đã quét: Không có dữ liệu")
     print()
     print("==========================")
+
+async def periodicLoggerTask():
+    if reportTaskSched == "none":
+        return
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        sleepTime = 3600 if reportTaskSched == "hourly" else 86400
+        await asyncio.sleep(sleepTime)
+        
+        currentTimeStr = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        typeStr = "HÀNG GIỜ" if reportTaskSched == "hourly" else "HÀNG NGÀY"
+        
+        print(f"=== BÁO CÁO THỐNG KÊ {typeStr} ===")
+        print(f"Thời gian: {currentTimeStr}")
+        print(f"Số lượng tin nhắn đã nạp: {bot.totalScannedMessages}")
+        print(f"Đã nạp bao nhiêu tin nhắn mới: {bot.hourlyNewMessages}")
+        print(f"Tin nhắn đã sửa: {bot.hourlyEditedMessages}")
+        print(f"Tin nhắn đã xoá: {bot.hourlyDeletedMessages}")
+        print("=================================")
+        
+        if alsoSendToLogChannel:
+            logChannel = bot.get_channel(logChannelId)
+            if logChannel:
+                embedReport = discord.Embed(
+                    title=f"Báo cáo định kỳ ({typeStr.lower()})",
+                    color=discord.Color.blue()
+                )
+                embedReport.add_field(name="Thời gian phát hành", value=currentTimeStr, inline=False)
+                embedReport.add_field(name="Tổng số tin nhắn hiện tại", value=f"{bot.totalScannedMessages} tin nhắn", inline=True)
+                embedReport.add_field(name="Tin nhắn mới phát sinh", value=f"{bot.hourlyNewMessages} tin nhắn", inline=True)
+                embedReport.add_field(name="Tin nhắn đã chỉnh sửa", value=f"{bot.hourlyEditedMessages} tin nhắn", inline=True)
+                embedReport.add_field(name="Tin nhắn đã xoá bỏ", value=f"{bot.hourlyDeletedMessages} tin nhắn", inline=True)
+                await logChannel.send(embed=embedReport)
+
+        bot.hourlyNewMessages = 0
+        bot.hourlyEditedMessages = 0
+        bot.hourlyDeletedMessages = 0
 
 @bot.tree.command(name="getstats", description="Lấy trạng thái lưu trữ tin nhắn.", guild=discord.Object(id=targetGuildId))
 @app_commands.default_permissions(administrator=True)
@@ -327,9 +406,8 @@ async def getstats(interaction: discord.Interaction):
     uptimeStr = f"{days} ngày, {hours} giờ, {minutes} phút, {seconds} giây"
 
     embedStats = discord.Embed(
-        title="Báo cáo trạng thái hệ thống",
-        color=discord.Color.blue(),
-        timestamp=datetime.now()
+        title="Trạng thái của MACB",
+        color=discord.Color.blue()
     )
     
     embedStats.add_field(name="Thống kê Chung", value=f"**Uptime:** {uptimeStr}", inline=False)
@@ -339,12 +417,16 @@ async def getstats(interaction: discord.Interaction):
         f"**Trạng thái:** {dbStatusStr}\n"
         f"**Kích thước tệp:** {fileSizeKB:.2f} KB\n"
         f"**Tin nhắn đã nạp:** {bot.totalScannedMessages}\n"
+        f"**Thời gian nạp:** {bot.totalScanTimeStr}\n"
         f"**Thời gian cũ nhất:** {formattedDate}"
     )
     embedStats.add_field(name="Cơ sở dữ liệu", value=dbCombinedValue, inline=False)
     
     embedStats.add_field(name="Thống kê Máy chủ", value=f"**Kênh giám sát:** {totalChannels}\n**Tổng số người:** {totalMembers}", inline=False)
     embedStats.add_field(name="Tài nguyên", value=f"**Mức sử dụng RAM:** {ramMB:.2f} MB", inline=False)
+    embedStats.add_field(name="Discord Hỗ trợ", value="https://dsc.gg/meowsmp", inline=False)
+
+    embedStats.set_footer(text="Bot by @meowice\nSource: https://github.com/MeowIce/macb")
 
     await interaction.response.send_message(embed=embedStats)
 
@@ -355,6 +437,8 @@ async def on_ready():
         
     print(f"Bot Username: {bot.user.name}")
     print(f"Bot ID: {bot.user.id}")
+    print(f"Chế độ báo cáo định kỳ: {reportTaskSched}")
+    print(f"Gửi báo cáo vào kênh log: {'Có' if alsoSendToLogChannel else 'Không'}")
     print()
     
     dbSuccess = initDatabase()
@@ -376,13 +460,18 @@ async def on_ready():
         print(f"Tổng số người trong máy chủ: {totalMembers}")
         print()
         
-        asyncio.create_task(backgroundScanTask(targetGuild))
-        
         try:
             await bot.tree.sync(guild=discord.Object(id=targetGuildId))
             print("Đã đồng bộ Slash Command thành công")
         except Exception as e:
             print(f"Lỗi đồng bộ Slash Command: {e}")
+        print()
+        
+        asyncio.create_task(backgroundScanTask(targetGuild))
+        
+        if reportTaskSched != "none" and not bot.loggerTaskStarted:
+            bot.loggerTaskStarted = True
+            asyncio.create_task(periodicLoggerTask())
     print()
 
 @bot.event
@@ -398,6 +487,8 @@ async def on_message(message):
         url = message.stickers[0].url
     avatarUrl = message.author.display_avatar.url if message.author.display_avatar else ""
     saveToDatabase(message.id, message.author.id, message.author.name, avatarUrl, message.channel.id, message.content, url)
+    bot.totalScannedMessages += 1
+    bot.hourlyNewMessages += 1
     await bot.process_commands(message)
 
 @bot.event
@@ -419,6 +510,10 @@ async def on_raw_message_delete(payload):
     channelId = messageData[4]
     content = messageData[5]
     attachmentUrl = messageData[6]
+    
+    deleteFromDatabase(payload.message_id)
+    bot.totalScannedMessages -= 1
+    bot.hourlyDeletedMessages += 1
     
     createdUtc = discord.utils.snowflake_time(payload.message_id)
     createdLocal = createdUtc.astimezone()
@@ -497,6 +592,8 @@ async def on_raw_message_edit(payload):
     channelId = oldData[4]
     attachmentUrl = oldData[6]
     
+    bot.hourlyEditedMessages += 1
+    
     createdUtc = discord.utils.snowflake_time(messageId)
     createdLocal = createdUtc.astimezone()
     sentTimeStr = createdLocal.strftime("%d/%m/%Y %H:%M:%S")
@@ -510,7 +607,7 @@ async def on_raw_message_edit(payload):
             if any(filenameLower.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]):
                 messageType = "Văn bản & Media (Hình ảnh)"
             elif filenameLower.endswith(".gif"):
-                messageType = "Văn bản & Media (Ảnh động GIF)"
+                messageType = "VBT & Media (Ảnh động GIF)"
             elif any(filenameLower.endswith(ext) for ext in [".mp4", ".mov", ".webm"]):
                 messageType = "Văn bản & Media (Video)"
             else:
@@ -542,4 +639,5 @@ async def on_raw_message_edit(payload):
     
     await logChannel.send(embed=embedMessage)
 
+print("MACB đang khởi động...")
 bot.run(botToken, log_handler=None)
