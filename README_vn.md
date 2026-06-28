@@ -14,7 +14,7 @@ Languages: `[Tiếng Việt]` | [[English]](https://github.com/MeowIce/macb/blob
 * **Sao lưu và bảo tồn media vĩnh viễn** - Tự động tải toàn bộ tệp đính kèm về máy và nạp lại một bản sao vào kênh log. Điều này giúp hình ảnh hoặc video không bị mất đi ngay cả khi Discord xóa vĩnh viễn file trên hệ thống CDN.
 * **Tối ưu hóa hiển thị media** - Hình ảnh và ảnh động GIF được chèn trực tiếp vào embed; video được nạp dưới dạng tệp đính kèm có thể phát ngay, đảm bảo hiển thị mượt mà trên cả giao diện máy tính và điện thoại.
 
-### Hiệu năng & Tối ưu hóa phần cứng
+### Hiệu năng & Tối ưu hóa
 * **Chat indexing siêu tốc** - Tốc độ đồng bộ & indexing lịch sử server đạt hơn **820 tin nhắn/giây**, xử lý xong **hơn 27.000 tin nhắn** chỉ trong vòng chưa đầy **33 giây**.
 * **Kiến trúc SQLite WAL tối ưu** - Tách biệt hoàn toàn kết nối đọc và ghi chuyên biệt kết hợp chế độ WAL, giúp xử lý các tác vụ cơ sở dữ liệu đồng thời với độ trễ cực thấp.
 * **Quét khởi động theo phân đoạn (Delta Scan)** - MACB chỉ quét những kênh văn bản có phát sinh thay đổi kể từ lần tắt bot trước đó, giúp rút ngắn tối đa thời gian khởi động trên các máy chủ quy mô lớn.
