@@ -60,7 +60,10 @@ MACB chỉ cần ~3 giây để chuẩn bị cơ sở dữ liệu và hoàn tấ
 <img width="705" height="387" alt="{A01ABCB4-B104-4EEB-81E6-9E53ED36F0D6}" src="https://github.com/user-attachments/assets/716793cd-4d90-45f1-b9f0-4ef1a105fd7d" />
 
 ### Slash Command
-<img width="354" height="770" alt="{621365D9-9E31-47B8-B132-0F9BD872244C}" src="https://github.com/user-attachments/assets/52aa59bb-76a8-4c5f-bcf5-77b91ca6da19" />
+<img width="497" height="512" alt="{7F49016C-D713-4577-9D39-C467F4F9A072}" src="https://github.com/user-attachments/assets/b8017aa6-41f9-4de7-b92c-507d4f832b7f" />  
+<img width="495" height="484" alt="{0572E212-E35B-4229-AFE6-58F116164A74}" src="https://github.com/user-attachments/assets/f813ab0f-4eaa-4639-a8fe-6381127d0f06" />  
+
+
 
 ### Hỗ trợ đa ngôn ngữ
 <img width="322" height="426" alt="{E0B78561-1797-4318-A18B-646C18A32661}" src="https://github.com/user-attachments/assets/9b327c7a-e84c-49d5-96cc-1e279ff7034e" />
