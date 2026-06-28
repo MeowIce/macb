@@ -83,6 +83,8 @@ class DatabaseManager:
     async def dbWorker(self):
         while True:
             try:
+                if self.bot and hasattr(self.bot, "watchdog"):
+                    self.bot.watchdog.feedHeartbeat("DatabaseWorker")
                 try:
                     action = await asyncio.wait_for(self.dbQueue.get(), timeout=1.0)
                 except asyncio.TimeoutError:

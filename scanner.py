@@ -64,6 +64,9 @@ class StartupScanner:
         self.bot.totalScanTimeStr = f"{duration:.2f}"
         self.bot.scanComplete = True
         
+        # Sync the memory variable with actual DB count
+        self.bot.totalScannedMessages = await asyncio.to_thread(self.bot.databaseManager.getTotalMessageCount)
+        
         if isFirstScan:
             print(getLocaleString("scanCompleteFirstStr", count=self.bot.currentBootScanned, time=self.bot.totalScanTimeStr))
         else:

@@ -125,6 +125,16 @@ class HealthWatchdog:
                         pass
             self.bot.logDispatcher.startLoops(loop)
             self.feedHeartbeat("LogDispatcherWorker")
+        elif taskName == "PeriodicReportTask":
+            oldTask = self.bot.periodicTask
+            if oldTask and not oldTask.done():
+                oldTask.cancel()
+                try:
+                    await oldTask
+                except asyncio.CancelledError:
+                    pass
+            self.bot.periodicTask = loop.create_task(self.bot.periodicReportTask())
+            self.feedHeartbeat("PeriodicReportTask")
 
 class DummyMediaManager:
     def __init__(self, bot):
@@ -224,11 +234,27 @@ class AdvancedChatBot(commands.Bot):
         schedType = getattr(config, "reportTaskSched", "hourly")
         sleepInterval = 3600 if schedType == "hourly" else 86400
         while True:
-            await asyncio.sleep(sleepInterval)
-            if self.watchdog:
-                self.watchdog.feedHeartbeat("PeriodicReportTask")
-            if getattr(config, "alsoSendToLogChannel", True):
-                await self.generateAndSendReport(False)
+            try:
+                remainingSleep = sleepInterval
+                while remainingSleep > 0:
+                    if self.watchdog:
+                        self.watchdog.feedHeartbeat("PeriodicReportTask")
+                    sleepChunk = min(30, remainingSleep)
+                    await asyncio.sleep(sleepChunk)
+                    remainingSleep -= sleepChunk
+
+                if self.watchdog:
+                    self.watchdog.feedHeartbeat("PeriodicReportTask")
+                if getattr(config, "alsoSendToLogChannel", True):
+                    await self.generateAndSendReport(False)
+                if self.watchdog:
+                    self.watchdog.feedHeartbeat("PeriodicReportTask")
+            except asyncio.CancelledError:
+                break
+            except Exception as ex:
+                logger.error(f"Periodic report task error: {str(ex)}", exc_info=True)
+                if self.watchdog:
+                    self.watchdog.feedHeartbeat("PeriodicReportTask")
 
     async def generateAndSendReport(self, isManual):
         logChannel = self.get_channel(config.logChannelId)
@@ -237,12 +263,15 @@ class AdvancedChatBot(commands.Bot):
                 logChannel = await self.fetch_channel(config.logChannelId)
             except Exception as fetchError:
                 logger.error(f"Failed to fetch log channel via API: {str(fetchError)}")
-                return
+                return False
         schedType = getattr(config, "reportTaskSched", "hourly")
         titleKey = "periodicReportHourly" if schedType == "hourly" else "periodicReportDaily"
         titleText = getLocaleString(titleKey)
         currentTimeStr = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        totalMsgsStr = getLocaleString("msgCountSuffix", count=self.totalScannedMessages)
+        
+        # Query total message count directly from database to match /getstats
+        totalMsgsCount = await asyncio.to_thread(self.databaseManager.getTotalMessageCount)
+        totalMsgsStr = getLocaleString("msgCountSuffix", count=totalMsgsCount)
         newMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyNewMessages)
         editedMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyEditedMessages)
         deletedMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyDeletedMessages)
@@ -262,6 +291,7 @@ class AdvancedChatBot(commands.Bot):
         self.hourlyNewMessages = 0
         self.hourlyEditedMessages = 0
         self.hourlyDeletedMessages = 0
+        return True
 
 bot = AdvancedChatBot()
 
