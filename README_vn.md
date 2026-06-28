@@ -125,7 +125,7 @@ python bot.py
 ---
 
 > [!NOTE]
-> Nếu MACB giúp ích cho quy trình quản lý server của bạn, đừng quên tặng star cho repo nhé. Thank you ^^
+> Nếu MACB giúp ích cho quy trình quản lý server của bạn, đừng quên tặng star cho repo nhé. Thank you ^^  
 > <img width="207" height="81" alt="{9EC984E8-81B6-47CE-B7AD-9CD3A5EAA942}" src="https://github.com/user-attachments/assets/c75b2695-a56d-44a0-9f38-831d1da38378" />
 
 ---
