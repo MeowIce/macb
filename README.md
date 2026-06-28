@@ -6,7 +6,7 @@ The most advanced, high-performance, and memory-efficient Discord chat logging b
 ## What Makes MACB Stand Out ?
 
 ### For Users & Moderators
-* **Complete Message Logging** - Captures message creation, edits, and deletions across all monitored channels in real time.
+* **Complete Message Logging** - Unlike most chat logging bots, MACB reliably detects edits and deletions on both newly sent and historical messages, even months after they were originally posted.
 * **Full Edit History** - Preserves both original and updated message content, allowing moderators to review every revision.
 * **Offline Recovery** - Automatically detects and reconstructs message edits and deletions that occurred while the bot was offline.
 * **Bulk Delete Detection** - Differentiates between normal deletions, moderator purges, and bulk delete events using Discord Audit Logs.
