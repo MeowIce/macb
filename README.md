@@ -1,87 +1,125 @@
-# MeowIce's Advanced Chatlogging Bot
-## Một chiếc Bot theo dõi tin nhắn cực kỳ mạnh mẽ trên Discord !
+# MeowIce's Advanced Chatlogging Bot (MACB) 2.0  
+The most advanced, high-performance, and memory-efficient Discord chat logging bot. Built for large-scale communities.
 
-## Giới thiệu
-Quá mệt mỏi với việc các thành viên trong server Discord của bạn sửa/xoá tin nhắn mà không thể đọc lại được bản gốc ? Hay các bot hiện tại chưa đủ mạnh mẽ để khiến bạn hài lòng ?  
-Hãy thử MeowIce's Advanced ChatLogging Bot !
+---
 
-### ✨ Tính năng nổi bật ✨
-Điều gì khiến MACB "built different" so với bot khác trên thị trường ?  
-- **Cảnh báo thời gian thực:** MACB tự động phát hiện và gửi thông báo khi có tin nhắn bị xoá hoặc chỉnh sửa trong các kênh văn bản;  
-- **Tự động nhận diện định dạng:** MACB sẽ tự phân tích cấu trúc tin nhắn để phân loại giữa văn bản thô (plain text), ảnh tĩnh (jpg, png, jepg, webp), ảnh động GIF, video (mp4, webm, mov) hay Sticker để set giao diện hiển thị log tương ứng;  
-- **Lưu ảnh, video và phương tiện đã xoá vĩnh viễn**: MACB sẽ tự động upload 1 bản copy của file phương tiện gốc lên thay vì phục thuộc hoàn toàn vào link media của file gốc như bot Auttaja -> không còn tình trạng file không khả dụng sau vài giờ;  
-- **Lưu trữ Database mạnh mẽ**: MACB sẽ không quên các tin nhắn đã gửi. Các tin nhắn đều được lưu trữ trong Database SQLite cực kỳ gọn nhẹ, thực tế cho thấy 13k tin nhắn từ 2020 đến 2026 chỉ tốn ~5.7MB;  
-- **Tốc độ nạp dữ liệu tin nhắn đỉnh cao**: Nhờ sự tối ưu hoá tài tình của Mèo ta mà cơ chế tìm & nạp dữ liệu chat diễn ra nhanh bứt tốc, lên đến 420 tin nhắn/giây. Test thực tế cho thấy việc tìm & nạp thành công 13121 tin nhắn trong 54 kênh ở server [MeowHouse](https://dsc.gg/meowsmp) với thời gian chỉ khoảng hơn 30 giây* !  
-- **Slash Command**: MACB tích hợp sẵn lệnh `/getstats` để bạn check nhanh thông tin bot trong Discord mà không cần mở console/terminal;  
-- **Khởi động nhanh**: Toàn bộ tiến trình tìm & nạp chat cũ được xử lý async, tự động đẩy xuống luồng xử lý ngầm, giải phóng hoàn toàn luồng chính để MACB sẵn sàng sử dụng ngay khi vừa online;  
-- **Phát hiện thay đổi khi offline****: Khác với các bot khác trên thị trường, MACB tự động đối chiếu các tin nhắn trên Discord với dữ liệu trong Database ngay khi khởi động và notify các tin nhắn bị xóa hoặc sửa tin nhắn trong lúc bot offline;  
-- **Thống kê Định kỳ**: Bạn có thể cho MACB report trạng thái thu thập tin nhắn theo giờ hoặc theo ngày trong config.  
-- **Bảo vệ Rate Limit an toàn**: Quản lý mật độ kết nối nghiêm ngặt bằng Semaphore giúp bảo vệ tuyệt đối địa chỉ IP máy chủ của bạn khỏi các bộ lọc chặn truy cập từ Discord.  
-> [!NOTE]
-> <small>(*) Tốc độ nạp tin nhắn phụ thuộc vào máy của bạn. Dữ liệu trên được lấy khi cho bot chạy trên OS Ubuntu Server 24.04, i7 3770, 32GB RAM DDR3-1600 với SSD SATA 3 (500MB/s)</small>  
-> <small>(**) Nếu tin nhắn đó đã được MACB lưu trữ. Không có tác dụng đối với tin nhắn mới. Khi khởi động lên lại, MACB sẽ tự động fetch tin nhắn mới về.</small>  
+## What Makes MACB Stand Out ?
 
-### Showcase
-<img width="889" height="496" alt="image" src="https://github.com/user-attachments/assets/1e8b3144-2416-46f0-9722-edac28e529da" />
-<img width="490" height="601" alt="image" src="https://github.com/user-attachments/assets/5508d138-45a8-4dd0-9bb1-ad114adf1c78" />
-<img width="579" height="782" alt="{ACDA0760-B891-4D28-A807-9563EF1EE400}" src="https://github.com/user-attachments/assets/177940fd-3e45-4b1a-a0c2-978e05d8968b" />
-<img width="484" height="805" alt="{77E84663-6398-4D18-A4CA-8ADDBD5CBA7A}" src="https://github.com/user-attachments/assets/f6784b9c-3a8b-4bdb-9dc7-6d7d97a714db" />
-<img width="534" height="622" alt="{317F9478-00D7-4685-B0E0-189DD378D52C}" src="https://github.com/user-attachments/assets/40f5ef4e-9e2b-4809-bcc8-a12703c6d42f" />
-<img width="389" height="692" alt="{E66A52EA-15AE-4F04-A9EB-03F8F8CDAB31}" src="https://github.com/user-attachments/assets/322c5868-f07b-49aa-9ae0-5e6cc4bcb210" />
-<img width="696" height="633" alt="{35AAE47F-98CD-42C5-83E2-5747C51C818F}" src="https://github.com/user-attachments/assets/5e5c83b7-39e1-486b-846d-0283666234cc" />
+### For Users & Moderators
+* **Complete Message Logging** - Captures message creation, edits, and deletions across all monitored channels in real time.
+* **Full Edit History** - Preserves both original and updated message content, allowing moderators to review every revision.
+* **Offline Recovery** - Automatically detects and reconstructs message edits and deletions that occurred while the bot was offline.
+* **Bulk Delete Detection** - Differentiates between normal deletions, moderator purges, and bulk delete events using Discord Audit Logs.
+* **Rich Message Context** - Stores replies, embeds, attachments, author information, and attachment MIME types for complete context.
+* **Permanent Media Preservation** - Automatically downloads every attachments and re-upload a copy of them to the log channel, ensuring deleted media remains available even after Discord permanently removes CDN files.
+* **Optimized Media Rendering** - Displays images and GIFs directly inside embeds while presenting videos as playable attachments for reliable desktop and mobile viewing.
+
+### Performance & Efficiency
+* **Fast First-Startup Indexing** - Synchronizes existing server history at over **820 messages/sec**, indexing **27,000+ messages** in under **33 seconds**.
+* **SQLite WAL Architecture** - Uses dedicated read and write connections with WAL mode to support concurrent database operations efficiently.
+* **Delta-Based Startup Scan** - Only scans channels that have changed since the previous shutdown, dramatically reducing startup time on large servers.
+* **Batch Database Writes** - Buffers and commits messages in large batches to minimize disk I/O and maximize throughput.
+* **Memory Efficient** - Maintains under **80 MB RAM** usage even after indexing tens of thousands of messages.
+* **Designed for Large Communities** - Optimized to process large Discord servers with minimal CPU, memory, and database overhead.
+
+### Administration & Reliability
+* **`/getstats`** - Displays live uptime, database statistics, indexed message count, RAM usage, scan duration, and server information.
+* **Startup Log Batching** - Groups thousands of offline edits and deletions into compact batch reports, reducing Discord REST requests by over **95%** and virtually eliminating HTTP 429 rate limits.
+* **Scheduled Activity Reports** - Automatically sends hourly or daily moderation summaries to your configured log channel.
+* **Multi-language Support** - Supports both English (`en`) and Vietnamese (`vi`) through a single configuration option.
+* **Health Watchdog** - Continuously monitors background workers and automatically recovers stalled tasks for stable 24/7 operation.
+* **Modular Design** - Separates core functionality into independent modules, enabling easier maintenance, customization, and component replacement.
+* **Production Ready** - Built for long-term deployment with asynchronous workers, concurrent database access, and resilient startup synchronization.
 
 
-## Cài đặt & Chạy
-### 1. Cấu hình trên Discord Developer Portal
+## Showcase
+### First startup - Full scan
+Only took ~33s for 27,205 messages !
+<img width="1066" height="201" alt="image" src="https://github.com/user-attachments/assets/19cec69d-67cb-42ad-9f10-d6da0bb0e021" />  
 
-* Truy cập vào giao diện quản lý ứng dụng của Discord.
-* Tạo một ứng dụng mới và thiết lập tài khoản Bot.
-* Di chuyển đến mục **Bot**, tìm phần **Privileged Gateway Intents** và kích hoạt cả 3 options: `Presence Intent`, `Server Members Intent`, và `Message Content Intent`.
-* Mời bot vào máy chủ với quyền `Xem lịch sử tin nhắn`.
+### Next startup and onwards - Smart Scan
+MACB only took ~3s to prepare the database and finish messages synching.
+<img width="1044" height="205" alt="{1F424276-8075-4794-92D6-43DA0715563F}" src="https://github.com/user-attachments/assets/81cbf592-d7f9-4761-928f-dd02a9070e6f" />  
 
-### 2. Cài đặt thư viện trên server
+### Message Deletion
+<img width="411" height="711" alt="{B0D80459-89A5-4CFD-A0B5-3EC362B382AF}" src="https://github.com/user-attachments/assets/932d517f-e748-4bd4-8c8d-f3aa10af0f54" />  
+<img width="392" height="453" alt="{192F5F05-DFDC-423F-8164-D1C2640B68A3}" src="https://github.com/user-attachments/assets/976914d9-3e3b-4ecd-86e4-3723403cce0d" />  
 
-Mở cửa sổ Terminal mới tại thư mục chứa src của bot và chạy lệnh sau để cài đặt các dependencies:
+### Message Edit
+<img width="304" height="422" alt="{32E18CA3-63AA-4EEE-8B5C-DF07D17F3E6C}" src="https://github.com/user-attachments/assets/5e546aa9-e393-4fdc-bf9e-386d84012631" />  
 
+### Attachments & Media Preservation
+<img width="381" height="664" alt="{5D59D99D-E46C-4A44-B1C3-21D226BBE93A}" src="https://github.com/user-attachments/assets/05877ab7-1cf3-4409-86bf-f49eb5aff543" />  
+<img width="639" height="624" alt="{F3212D74-04B3-4E8D-A4DC-C5689E203625}" src="https://github.com/user-attachments/assets/55ffdc92-9090-41e0-a8cf-a803a7d85487" />  
+<img width="1008" height="666" alt="{CE195510-DEA6-45FD-AE63-1A821E103620}" src="https://github.com/user-attachments/assets/4d3a8b8c-37e0-4b92-8df4-22f44cdcd2f8" />  
+
+
+### Offline Recovery
+<img width="391" height="433" alt="{0C3BCE78-3437-4604-9305-E2DADDB31B24}" src="https://github.com/user-attachments/assets/e5c4b8f0-b85b-4186-8fae-620e6333c3f5" />  
+
+### Bulk Delete Detection
+<img width="705" height="387" alt="{A01ABCB4-B104-4EEB-81E6-9E53ED36F0D6}" src="https://github.com/user-attachments/assets/716793cd-4d90-45f1-b9f0-4ef1a105fd7d" />
+
+### Slash Command
+<img width="354" height="770" alt="{621365D9-9E31-47B8-B132-0F9BD872244C}" src="https://github.com/user-attachments/assets/52aa59bb-76a8-4c5f-bcf5-77b91ca6da19" />
+
+### Multi-Languages
+<img width="322" height="426" alt="{E0B78561-1797-4318-A18B-646C18A32661}" src="https://github.com/user-attachments/assets/9b327c7a-e84c-49d5-96cc-1e279ff7034e" />
+
+## Installation & Setup
+
+### Prerequisites
+*   **Python 3.10+** (Ensure Python is added to your system PATH)
+*   A Discord Bot Token (created via the [Discord Developer Portal](https://discord.com/developers/applications))
+*   **Discord Gateway Intents**: Ensure **Message Content Intent** and **Server Members Intent** are toggled **ON** in the *Discord Developer Portal* under *Bot -> Privileged Gateway Intents*.
+*   **Permissions**: Ensure the Bot's highest role has the `Read Message History`, `View Audit Log`, and `View Channels` permissions for all monitored text channels.
+
+### 1. Clone the Repository
 ```bash
-pip install discord.py aiohttp psutil
+git clone https://github.com/MeowIce/macb.git
+cd macb
 ```
 
-### 3. Set guild & kênh để theo dõi và gửi notify
+### 2. Install Dependencies
+Install the required packages using `pip`:
+```bash
+pip install discord.py psutil aiohttp
+```
 
-Mở file `bot.py` và tiến hành thay thế ID tương ứng với thông tin server Discord của bạn:
+### 3. Configuration (`config.py`)
 
+Open `config.py` and configure your settings:
+
+*   `botToken`: Your Discord Bot Token.
+*   `targetGuildId`: The ID of the Discord Guild (Server) you want to monitor.
+*   `logChannelId`: The ID of the text channel where log embeds should be sent.
+*   `botLang`: Choose `"en"` for English or `"vi"` for Vietnamese.
+
+Example `config.py` structure:
 ```python
-botToken = "YOUR_BOT_TOKEN"
-targetGuildId = 708718758616760339
-logChannelId = 879961838043922432
-reportTaskSched = "hourly"
-alsoSendToLogChannel = True
+botToken = "YOUR_DISCORD_BOT_TOKEN"
+targetGuildId = 123456789012345678   # Target Server ID
+logChannelId = 987654321098765432    # Target Log Channel ID
+botLang = "en"                       # Language ('en' or 'vi')
 ```
-`botToken` là chỗ để điền token của bot
-`targetGuildId` là ID server Dis cần theo dõi. Var này nhận số nguyên (int)  
-`logChannelId` là ID kênh ở cái server đó để gửi notify vô. Var này nhận số nguyên (int)   
-`reportTaskSched` là thời gian định kỳ mà bot sẽ gửi thống kê. Var này nhận 2 strings (`hourly`/`daily`).  
-`alsoSendToLogChannel` Có cho phép bot gửi bản copy trạng thái từ terminal vào kênh `logChannelId` không. Var này nhận giá trị Boolean (`True`/`False`)  
+> [!NOTE]
+> **On `maxParallelScans = 36` and `maxParallelDownloads = 16`**: These settings are optimized for high-throughput systems. If your hosting environment (VPS/Home server) has limited CPU or network speed, reduce these value to `15` or `20` to prevent network congestion.  
+>
+> The rest should be left intact, unless you know what you're doing.
+## How to Run
 
-### 4. Chạy bot
-
-Chạy lệnh sau để kích hoạt bot:
+Run the bot directly via the terminal:
 
 ```bash
 python bot.py
 ```
+---
+> [!NOTE]
+> If MACB has been useful for your moderation workflow, consider giving the repository a star. Thank you ^^  
+> <img width="207" height="81" alt="{9EC984E8-81B6-47CE-B7AD-9CD3A5EAA942}" src="https://github.com/user-attachments/assets/c75b2695-a56d-44a0-9f38-831d1da38378" />
 
-Khi terminal hiển thị thông báo kết nối thành công, bot sẽ tự động chạy tiến trình đồng bộ dữ liệu chat.
+---
 
-## Hỗ trợ
-- Discord: `@meowice`
-- MeowHouse: https://dsc.gg/meowsmp
+## License and Terms of Use
 
-## License
-MeowIce's Advanced Chatlogging Bot  
-Copyright (c) 2026 MeowIce  
-
-Được phép sử dụng, sửa đổi và phân phối phần mềm này chỉ cho mục đích phi thương mại.  
-Việc bán phần mềm này hoặc bất kỳ tác phẩm phái sinh nào đều bị nghiêm cấm nếu không có sự cho phép rõ ràng bằng văn bản.  
-Nghiêm cấm xóa hoặc thay đổi thông tin tác giả.  
+Copyright (c) 2026 MeowIce. Permission is granted to use, modify, and distribute this software for non-commercial purposes only. Selling this software or any derivative works is prohibited without explicit written permission. Removing or altering author credits is prohibited.
