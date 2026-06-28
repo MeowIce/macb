@@ -5,7 +5,7 @@ import time
 import os
 import config
 
-logger = logging.getLogger("BotLogger")
+logger = logging.getLogger("MacbLogger")
 
 class DatabaseManager:
     def __init__(self, bot, metricsTracker=None):

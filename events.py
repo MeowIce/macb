@@ -10,7 +10,7 @@ import config
 from localization import getLocaleString
 import collections
 
-logger = logging.getLogger("BotLogger")
+logger = logging.getLogger("MacbLogger")
 
 class BotEvents:
     def __init__(self, bot, metricsTracker=None):
@@ -108,8 +108,9 @@ class BotEvents:
                 json.dumps(contentTypesList)
             )
             await self.bot.databaseManager.enqueueAction("save", messageData)
-            self.bot.totalScannedMessages += 1
+            self.bot.totalCachedMessages += 1
             self.bot.hourlyNewMessages += 1
+            self.bot.totalNewMessages += 1
 
         @self.bot.event
         async def on_raw_message_delete(payload):
@@ -122,8 +123,9 @@ class BotEvents:
             dbData = await asyncio.to_thread(self.bot.databaseManager.getMessage, payload.message_id)
             if not dbData:
                 return
-            self.bot.totalScannedMessages -= 1
+            self.bot.totalCachedMessages -= 1
             self.bot.hourlyDeletedMessages += 1
+            self.bot.totalDeletedMessages += 1
             attachmentsList = []
             try:
                 attachmentsList = json.loads(dbData[10])
@@ -180,8 +182,9 @@ class BotEvents:
             if not dbRecords:
                 return
             await self.bot.databaseManager.enqueueAction("bulkDelete", messageIds)
-            self.bot.totalScannedMessages -= len(dbRecords)
+            self.bot.totalCachedMessages -= len(dbRecords)
             self.bot.hourlyDeletedMessages += len(dbRecords)
+            self.bot.totalDeletedMessages += len(dbRecords)
             validMessages = []
             for mId in messageIds:
                 if mId in dbRecords:
@@ -225,6 +228,7 @@ class BotEvents:
             if not dbData or dbData[9] == newContent:
                 return
             self.bot.hourlyEditedMessages += 1
+            self.bot.totalEditedMessages += 1
             await self.bot.databaseManager.enqueueAction("updateFields", (payload.message_id, {"content": newContent}))
             await self.bot.logDispatcher.enqueueLogAction({
                 "logType": "singleEdit",
@@ -307,9 +311,9 @@ class BotEvents:
             embedStatus.add_field(
                 name=getLocaleString("activitySection"),
                 value=(
-                    f"**{getLocaleString('newField')}:** {self.bot.hourlyNewMessages:,}\n"
-                    f"**{getLocaleString('editedField')}:** {self.bot.hourlyEditedMessages:,}\n"
-                    f"**{getLocaleString('deletedField')}:** {self.bot.hourlyDeletedMessages:,}\n"
+                    f"**{getLocaleString('newField')}:** {self.bot.totalNewMessages:,}\n"
+                    f"**{getLocaleString('editedField')}:** {self.bot.totalEditedMessages:,}\n"
+                    f"**{getLocaleString('deletedField')}:** {self.bot.totalDeletedMessages:,}\n"
                     f"**{getLocaleString('logQueueField')}:** {logQueueSize}/{config.maxLogQueueSize}"
                 ),
                 inline=True
@@ -373,7 +377,7 @@ class BotEvents:
             logWorkerStates = [taskState(task) for task in self.bot.logDispatcher.workerTasks]
             taskLines = [
                 f"**{getLocaleString('watchdogField')}:** {taskState(self.bot.watchdog.watchdogTask)}",
-                f"**{getLocaleString('metricsTaskField')}:** {taskState(self.bot.reportingTask)}",
+                f"**{getLocaleString('metricsTaskField')}:** {taskState(self.bot.metricsTask)}",
                 f"**{getLocaleString('periodicReportTaskField')}:** {taskState(self.bot.periodicTask)}",
                 f"**{getLocaleString('databaseWorkerField')}:** {taskState(self.bot.databaseManager.workerTask)}",
                 f"**{getLocaleString('mediaCacheTaskField')}:** {taskState(self.bot.mediaManager.cacheTask)}",

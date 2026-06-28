@@ -16,7 +16,7 @@ from scanner import StartupScanner
 from localization import getLocaleString
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-logger = logging.getLogger("BotLogger")
+logger = logging.getLogger("MacbLogger")
 
 class MetricsTracker:
     def __init__(self):
@@ -33,6 +33,9 @@ class MetricsTracker:
         self.alpha = 0.2
         self.lastThroughputCheck = time.perf_counter()
         self.currentThroughputRps = 0.0
+        self.hourlyNewMessages = 0
+        self.hourlyEditedMessages = 0
+        self.hourlyDeletedMessages = 0
 
     def updateDbQueue(self, length):
         self.dbQueueLength = length
@@ -178,7 +181,7 @@ intents.guilds = True
 intents.messages = True
 intents.members = True
 
-class AdvancedChatBot(commands.Bot):
+class MACB(commands.Bot):
     def __init__(self):
         super().__init__(
             command_prefix="!", 
@@ -192,25 +195,28 @@ class AdvancedChatBot(commands.Bot):
         self.botEvents = BotEvents(self, metricsTracker)
         self.watchdog = HealthWatchdog(self)
         self.mediaManager = DummyMediaManager(self)
-        self.totalScannedMessages = 0
+        self.totalCachedMessages = 0
         self.globalOldestDate = None
         self.bootTime = None
         self.hourlyNewMessages = 0
         self.hourlyEditedMessages = 0
         self.hourlyDeletedMessages = 0
         self.currentBootScanned = 0
+        self.totalNewMessages = 0
+        self.totalEditedMessages = 0
+        self.totalDeletedMessages = 0
         self.scanComplete = False
-        self.reportingTask = None
+        self.metricsTask = None
         self.periodicTask = None
 
     async def setup_hook(self):
         self.botEvents.setupEvents()
         self.watchdog.watchdogTask = self.loop.create_task(self.watchdog.startWatchdogLoop())
-        self.reportingTask = self.loop.create_task(self.metricsReportingTask())
+        self.metricsTask = self.loop.create_task(self.metricsmetricsTask())
         self.mediaManager.cacheTask = self.loop.create_task(self.mediaManager.cleanCacheTask())
         self.periodicTask = self.loop.create_task(self.periodicReportTask())
 
-    async def metricsReportingTask(self):
+    async def metricsmetricsTask(self):
         while True:
             try:
                 await asyncio.sleep(30)
@@ -293,7 +299,7 @@ class AdvancedChatBot(commands.Bot):
         self.hourlyDeletedMessages = 0
         return True
 
-bot = AdvancedChatBot()
+bot = MACB()
 
 async def main():
     try:
@@ -304,10 +310,10 @@ async def main():
         pass
     finally:
         print(getLocaleString("shuttingDown"))
-        if bot.reportingTask and not bot.reportingTask.done():
-            bot.reportingTask.cancel()
+        if bot.metricsTask and not bot.metricsTask.done():
+            bot.metricsTask.cancel()
             try:
-                await bot.reportingTask
+                await bot.metricsTask
             except asyncio.CancelledError:
                 pass
         if bot.watchdog.watchdogTask and not bot.watchdog.watchdogTask.done():

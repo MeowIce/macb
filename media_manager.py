@@ -7,7 +7,7 @@ import discord
 import io
 import config
 
-logger = logging.getLogger("BotLogger")
+logger = logging.getLogger("MacbLogger")
 
 class MediaManager:
     def __init__(self):

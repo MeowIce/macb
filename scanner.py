@@ -8,7 +8,7 @@ import config
 from localization import getLocaleString
 import gc
 
-logger = logging.getLogger("BotLogger")
+logger = logging.getLogger("MacbLogger")
 
 class StartupScanner:
     def __init__(self, bot):
@@ -33,7 +33,7 @@ class StartupScanner:
             self.bot.globalOldestDate = datetime.fromtimestamp(timestampMs / 1000, tz=timezone.utc)
             
         textChannels = [ch for ch in guild.text_channels if ch.permissions_for(guild.me).read_message_history]
-        self.bot.totalScannedMessages = 0
+        self.bot.totalCachedMessages = 0
         self.bot.currentBootScanned = 0
         self.totalChannels = len(textChannels)
         self.channelsCompleted = 0
@@ -65,7 +65,7 @@ class StartupScanner:
         self.bot.scanComplete = True
         
         # Sync the memory variable with actual DB count
-        self.bot.totalScannedMessages = await asyncio.to_thread(self.bot.databaseManager.getTotalMessageCount)
+        self.bot.totalCachedMessages = await asyncio.to_thread(self.bot.databaseManager.getTotalMessageCount)
         
         if isFirstScan:
             print(getLocaleString("scanCompleteFirstStr", count=self.bot.currentBootScanned, time=self.bot.totalScanTimeStr))
@@ -80,9 +80,6 @@ class StartupScanner:
         
         # Trigger Garbage Collection to free memory occupied by transient startup data
         gc.collect()
-
-    async def scanChannelDelta(self, channel, maxLocalId):
-        pass
 
     async def scanChannelAdaptive(self, channel, maxLocalId, isFirstScan):
         localMsgCount = 0
@@ -194,7 +191,7 @@ class StartupScanner:
             if dbUpdatesList:
                 await self.bot.databaseManager.enqueueAction("bulkUpdateOffline", dbUpdatesList)
                 self.bot.hourlyEditedMessages += len(dbUpdatesList)
-                
+                self.bot.totalEditedMessages += len(dbUpdatesList)
             if maxLocalId and localCacheMap:
                 for cId in localCacheMap.keys():
                     if cId not in fetchedIdsSet:
@@ -225,6 +222,7 @@ class StartupScanner:
             if offlineDeletesCollected:
                 await self.bot.databaseManager.enqueueAction("bulkDelete", [d["messageId"] for d in offlineDeletesCollected])
                 self.bot.hourlyDeletedMessages += len(offlineDeletesCollected)
+                self.bot.totalDeletedMessages += len(offlineDeletesCollected)
                 
             if offlineEditsCollected:
                 for edit in offlineEditsCollected:

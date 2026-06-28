@@ -9,7 +9,7 @@ from datetime import datetime
 import config
 from localization import getLocaleString
 
-logger = logging.getLogger("BotLogger")
+logger = logging.getLogger("MacbLogger")
 
 def determineMessageType(content, contentTypesRaw):
     hasText = bool(content and str(content).strip())
