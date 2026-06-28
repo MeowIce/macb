@@ -1,643 +1,305 @@
-# MeowIce's Advanced Chatlogging Bot
-# Copyright (c) 2026 MeowIce
-
-# Permission is granted to use, modify, and distribute this software for non-commercial purposes only.
-# Selling this software or any derivative works is prohibited without explicit written permission.
-# Removing or altering author credits is prohibited.
-
 import discord
-from discord import app_commands
 from discord.ext import commands
-import io
-import aiohttp
-from datetime import datetime
-import sqlite3
 import asyncio
-import os
+import logging
+import sys
 import psutil
 import time
+import os
+import aiohttp
+from datetime import datetime
+import config
+from database import DatabaseManager
+from log_dispatcher import LogDispatcher
+from events import BotEvents
+from scanner import StartupScanner
+from localization import getLocaleString
 
-# ==== CONFIG ====
-botToken = "YOUR_BOT_TOKEN"
-targetGuildId = 708718758616760339
-logChannelId = 879961838043922432
-reportTaskSched = "hourly"
-alsoSendToLogChannel = True
-# =================
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("BotLogger")
 
+class MetricsTracker:
+    def __init__(self):
+        self.dbQueueLength = 0
+        self.logQueueLength = 0
+        self.dbLatencyEwma = 0.0
+        self.sendLatencyEwma = 0.0
+        self.downloadTimeEwma = 0.0
+        self.queueDroppedCount = 0
+        self.retryCount = 0
+        self.cacheHits = 0
+        self.cacheMisses = 0
+        self.throughputCount = 0
+        self.alpha = 0.2
+        self.lastThroughputCheck = time.perf_counter()
+        self.currentThroughputRps = 0.0
 
+    def updateDbQueue(self, length):
+        self.dbQueueLength = length
+
+    def updateLogQueue(self, length):
+        self.logQueueLength = length
+
+    def recordDbLatency(self, val):
+        if self.dbLatencyEwma == 0.0:
+            self.dbLatencyEwma = val
+        else:
+            self.dbLatencyEwma = (self.alpha * val) + ((1.0 - self.alpha) * self.dbLatencyEwma)
+
+    def recordSendLatency(self, val):
+        if self.sendLatencyEwma == 0.0:
+            self.sendLatencyEwma = val
+        else:
+            self.sendLatencyEwma = (self.alpha * val) + ((1.0 - self.alpha) * self.sendLatencyEwma)
+
+    def recordDownloadTime(self, val):
+        if self.downloadTimeEwma == 0.0:
+            self.downloadTimeEwma = val
+        else:
+            self.downloadTimeEwma = (self.alpha * val) + ((1.0 - self.alpha) * self.downloadTimeEwma)
+
+    def incrementQueueDropped(self):
+        self.queueDroppedCount += 1
+
+    def incrementRetry(self):
+        self.retryCount += 1
+
+    def incrementCacheHit(self):
+        self.cacheHits += 1
+
+    def incrementCacheSubMiss(self):
+        self.cacheMisses += 1
+
+    def recordThroughput(self, count):
+        self.throughputCount += count
+        now = time.perf_counter()
+        diff = now - self.lastThroughputCheck
+        if diff >= 1.0:
+            self.currentThroughputRps = self.throughputCount / diff
+            self.throughputCount = 0
+            self.lastThroughputCheck = now
+
+class HealthWatchdog:
+    def __init__(self, bot):
+        self.bot = bot
+        self.lastHeartbeats = {}
+        self.watchdogTask = None
+
+    def feedHeartbeat(self, taskName):
+        self.lastHeartbeats[taskName] = time.perf_counter()
+
+    async def startWatchdogLoop(self):
+        await self.bot.wait_until_ready()
+        while True:
+            try:
+                await asyncio.sleep(15)
+                now = time.perf_counter()
+                for taskName, lastTime in list(self.lastHeartbeats.items()):
+                    if now - lastTime > 60:
+                        logger.critical(f"Watchdog detected task stagnation or crash: {taskName}! Safe reconstruction in progress...")
+                        await self.resurrectTask(taskName)
+            except asyncio.CancelledError:
+                break
+            except Exception as watchdogEx:
+                logger.error(f"Watchdog loop execution exception: {str(watchdogEx)}")
+
+    async def resurrectTask(self, taskName):
+        loop = asyncio.get_running_loop()
+        if taskName == "DatabaseWorker":
+            oldTask = self.bot.databaseManager.workerTask
+            if oldTask and not oldTask.done():
+                oldTask.cancel()
+                try:
+                    await oldTask
+                except asyncio.CancelledError:
+                    pass
+            self.bot.databaseManager.workerTask = loop.create_task(self.bot.databaseManager.dbWorker())
+            self.feedHeartbeat("DatabaseWorker")
+        elif taskName == "LogDispatcherWorker":
+            for task in list(self.bot.logDispatcher.workerTasks):
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+            self.bot.logDispatcher.startLoops(loop)
+            self.feedHeartbeat("LogDispatcherWorker")
+
+class DummyMediaManager:
+    def __init__(self, bot):
+        self.bot = bot
+        self.session = None
+        self.cacheTask = None
+
+    def initialize(self):
+        self.session = aiohttp.ClientSession()
+
+    async def cleanCacheTask(self):
+        while True:
+            try:
+                if self.bot and hasattr(self.bot, "watchdog"):
+                    self.bot.watchdog.feedHeartbeat("MediaManager")
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                break
+
+    async def downloadMediaBytes(self, url):
+        if not self.session:
+            return None
+        async with self.session.get(url, timeout=15) as response:
+            response.raise_for_status()
+            return await response.read()
+
+    async def close(self):
+        if self.cacheTask and not self.cacheTask.done():
+            self.cacheTask.cancel()
+            try:
+                await self.cacheTask
+            except asyncio.CancelledError:
+                pass
+        if self.session:
+            await self.session.close()
+
+metricsTracker = MetricsTracker()
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.messages = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+class AdvancedChatBot(commands.Bot):
+    def __init__(self):
+        super().__init__(
+            command_prefix="!", 
+            intents=intents,
+            max_messages=10,
+            chunk_guilds_at_startup=False
+        )
+        self.databaseManager = DatabaseManager(self, metricsTracker)
+        self.logDispatcher = LogDispatcher(self, metricsTracker)
+        self.startupScanner = StartupScanner(self)
+        self.botEvents = BotEvents(self, metricsTracker)
+        self.watchdog = HealthWatchdog(self)
+        self.mediaManager = DummyMediaManager(self)
+        self.totalScannedMessages = 0
+        self.globalOldestDate = None
+        self.bootTime = None
+        self.hourlyNewMessages = 0
+        self.hourlyEditedMessages = 0
+        self.hourlyDeletedMessages = 0
+        self.currentBootScanned = 0
+        self.scanComplete = False
+        self.reportingTask = None
+        self.periodicTask = None
 
-bot.totalScannedMessages = 0
-bot.globalOldestDate = None
-bot.bootTime = None
-bot.hourlyNewMessages = 0
-bot.hourlyEditedMessages = 0
-bot.hourlyDeletedMessages = 0
-bot.loggerTaskStarted = False
-bot.currentBootScanned = 0
-bot.scanComplete = False
-bot.totalScanTimeStr = "Chưa có dữ liệu"
+    async def setup_hook(self):
+        self.botEvents.setupEvents()
+        self.watchdog.watchdogTask = self.loop.create_task(self.watchdog.startWatchdogLoop())
+        self.reportingTask = self.loop.create_task(self.metricsReportingTask())
+        self.mediaManager.cacheTask = self.loop.create_task(self.mediaManager.cleanCacheTask())
+        self.periodicTask = self.loop.create_task(self.periodicReportTask())
 
-def initDatabase():
-    try:
-        conn = sqlite3.connect("bot_log.db")
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS cached_messages (
-                messageId INTEGER PRIMARY KEY,
-                authorId INTEGER,
-                authorName TEXT,
-                authorAvatar TEXT,
-                channelId INTEGER,
-                content TEXT,
-                attachmentUrl TEXT
-            )
-        """)
-        conn.commit()
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-def saveToDatabase(messageId, authorId, authorName, authorAvatar, channelId, content, attachmentUrl):
-    conn = sqlite3.connect("bot_log.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT OR REPLACE INTO cached_messages VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (messageId, authorId, authorName, authorAvatar, channelId, content, attachmentUrl))
-    conn.commit()
-    conn.close()
-
-def deleteFromDatabase(messageId):
-    conn = sqlite3.connect("bot_log.db")
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM cached_messages WHERE messageId = ?", (messageId,))
-    conn.commit()
-    conn.close()
-
-def bulkSaveToDatabase(messagesList):
-    if not messagesList:
-        return
-    conn = sqlite3.connect("bot_log.db")
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL;")
-    cursor.execute("PRAGMA synchronous=OFF;")
-    cursor.execute("PRAGMA cache_size=-64000;")
-    cursor.executemany("""
-        INSERT OR REPLACE INTO cached_messages VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, messagesList)
-    conn.commit()
-    conn.close()
-
-def getChannelMessagesFromDatabase(channelId):
-    conn = sqlite3.connect("bot_log.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT messageId, authorId, authorName, authorAvatar, content, attachmentUrl 
-        FROM cached_messages WHERE channelId = ?
-    """, (channelId,))
-    rows = cursor.fetchall()
-    conn.close()
-    return {row[0]: row[1:] for row in rows}
-
-def bulkDeleteFromDatabase(messageIds):
-    if not messageIds:
-        return
-    conn = sqlite3.connect("bot_log.db")
-    cursor = conn.cursor()
-    cursor.executemany("DELETE FROM cached_messages WHERE messageId = ?", [(mId,) for mId in messageIds])
-    conn.commit()
-    conn.close()
-
-def getFromDatabase(messageId):
-    conn = sqlite3.connect("bot_log.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM cached_messages WHERE messageId = ?", (messageId,))
-    row = cursor.fetchone()
-    conn.close()
-    return row
-
-def updateDatabaseContent(messageId, newContent):
-    conn = sqlite3.connect("bot_log.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE cached_messages SET content = ? WHERE messageId = ?", (newContent, messageId))
-    conn.commit()
-    conn.close()
-
-async def mediaDownloader(attachmentUrl):
-    maxRetries = 3
-    async with aiohttp.ClientSession() as session:
-        for attempt in range(maxRetries):
+    async def metricsReportingTask(self):
+        while True:
             try:
-                async with session.get(attachmentUrl) as response:
-                    if response.status == 200:
-                        imageData = await response.read()
-                        filename = attachmentUrl.split("/")[-1].split("?")[0]
-                        if not filename:
-                            filename = "file.dat"
-                        return discord.File(io.BytesIO(imageData), filename=filename)
-                    elif response.status == 429:
-                        retryAfter = float(response.headers.get("Retry-After", 2))
-                        await asyncio.sleep(retryAfter)
-                    elif response.status in [500, 502, 503, 504]:
-                        await asyncio.sleep(2 ** attempt)
-                    else:
-                        break
-            except Exception:
-                await asyncio.sleep(2 ** attempt)
-        return None
-
-async def scanChannel(textChannel, semaphore):
-    async with semaphore:
-        messageCount = 0
-        oldestMessageDate = None
-        oldestMessageId = None
-        channelMessagesList = []
-        offlineEditsList = []
-        offlineDeletesList = []
-        fetchedIds = set()
-        
-        dbMessagesDict = await asyncio.to_thread(getChannelMessagesFromDatabase, textChannel.id)
-        
-        try:
-            async for messageItem in textChannel.history(limit=1000):
-                if messageItem.author.bot:
-                    continue
-                url = ""
-                if messageItem.attachments:
-                    url = messageItem.attachments[0].url
-                elif messageItem.stickers:
-                    url = messageItem.stickers[0].url
-                avatarUrl = messageItem.author.display_avatar.url if messageItem.author.display_avatar else ""
-                
-                fetchedIds.add(messageItem.id)
-                oldestMessageDate = messageItem.created_at
-                oldestMessageId = messageItem.id
-                
-                if messageItem.id in dbMessagesDict:
-                    oldAuthorId, oldAuthorName, oldAuthorAvatar, oldContent, oldUrl = dbMessagesDict[messageItem.id]
-                    
-                    oldText = str(oldContent or "").replace("\r\n", "\n")
-                    newText = str(messageItem.content or "").replace("\r\n", "\n")
-                    
-                    if oldText != newText:
-                        offlineEditsList.append({
-                            "messageId": messageItem.id,
-                            "authorId": oldAuthorId,
-                            "authorName": oldAuthorName,
-                            "authorAvatar": oldAuthorAvatar,
-                            "channelId": textChannel.id,
-                            "oldContent": oldContent,
-                            "newContent": messageItem.content,
-                            "oldUrl": oldUrl,
-                            "newUrl": url,
-                            "timestamp": messageItem.created_at
-                        })
-                
-                channelMessagesList.append((
-                    messageItem.id, 
-                    messageItem.author.id, 
-                    messageItem.author.name, 
-                    avatarUrl, 
-                    messageItem.channel.id, 
-                    messageItem.content, 
-                    url
-                ))
-                messageCount += 1
-                bot.currentBootScanned += 1
-                
-            if oldestMessageId:
-                for dbId, dbData in dbMessagesDict.items():
-                    if dbId not in fetchedIds and dbId > oldestMessageId:
-                        offlineDeletesList.append({
-                            "messageId": dbId,
-                            "authorId": dbData[0],
-                            "authorName": dbData[1],
-                            "authorAvatar": dbData[2],
-                            "channelId": textChannel.id,
-                            "content": dbData[3],
-                            "attachmentUrl": dbData[4]
-                        })
-                        
-        except Exception:
-            pass
-        return messageCount, oldestMessageDate, channelMessagesList, offlineEditsList, offlineDeletesList
-
-async def backgroundScanTask(targetGuild):
-    print("Đang nạp dữ liệu tin nhắn vào database... (quá trình này có thể mất vài giây hoặc vài phút).")
-    bot.currentBootScanned = 0
-    scanStartTime = time.perf_counter()
-    bot.scanComplete = False
-
-    async def reportProgress():
-        while not bot.scanComplete:
-            elapsedTime = time.perf_counter() - scanStartTime
-            currentSpeed = bot.currentBootScanned / elapsedTime if elapsedTime > 0 else 0
-            print(f"\rĐã nạp: {bot.currentBootScanned} tin nhắn | Tốc độ: {currentSpeed:.2f} tin nhắn/giây", end="", flush=True)
-            await asyncio.sleep(0.1)
-
-    reporterTask = asyncio.create_task(reportProgress())
-    scanSemaphore = asyncio.Semaphore(10)
-    channelTasks = [scanChannel(textChannel, scanSemaphore) for textChannel in targetGuild.text_channels]
-    scanResults = await asyncio.gather(*channelTasks)
-    
-    bot.scanComplete = True
-    await reporterTask
-    print()
-    
-    totalScannedMessages = 0
-    globalOldestDate = None
-    allMessagesList = []
-    totalOfflineEdits = []
-    totalOfflineDeletes = []
-    
-    for messageCount, oldestMessageDate, channelMessagesList, offlineEditsList, offlineDeletesList in scanResults:
-        totalScannedMessages += messageCount
-        if channelMessagesList:
-            allMessagesList.extend(channelMessagesList)
-        if offlineEditsList:
-            totalOfflineEdits.extend(offlineEditsList)
-        if offlineDeletesList:
-            totalOfflineDeletes.extend(offlineDeletesList)
-        if oldestMessageDate:
-            if globalOldestDate is None or oldestMessageDate < globalOldestDate:
-                globalOldestDate = oldestMessageDate
-                
-    if allMessagesList:
-        await asyncio.to_thread(bulkSaveToDatabase, allMessagesList)
-        
-    logChannel = bot.get_channel(logChannelId)
-    if logChannel:
-        for editItem in totalOfflineEdits:
-            createdUtc = discord.utils.snowflake_time(editItem["messageId"])
-            sentTimeStr = createdUtc.astimezone().strftime("%d/%m/%Y %H:%M:%S")
-            
-            embedEdit = discord.Embed(
-                title="Tin nhắn bị chỉnh sửa (Offline)",
-                color=discord.Color.dark_orange(),
-                description=f"Người gửi: <@{editItem['authorId']}> ({editItem['authorId']})\nKênh: <#{editItem['channelId']}>\nThời gian gửi: {sentTimeStr}\nID Tin nhắn: {editItem['messageId']}"
-            )
-            embedEdit.set_author(name=editItem["authorName"], icon_url=editItem["authorAvatar"])
-            embedEdit.add_field(name="Trước khi sửa", value=f"```\n{editItem['oldContent'] if editItem['oldContent'] else 'Không có nội dung chữ'}\n```", inline=False)
-            embedEdit.add_field(name="Sau khi sửa", value=f"```\n{editItem['newContent'] if editItem['newContent'] else 'Không có nội dung chữ'}\n```", inline=False)
-            embedEdit.set_footer(text=f"Phát hiện lúc: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-            await logChannel.send(embed=embedEdit)
-            await asyncio.sleep(0.2)
-            
-        deleteIdsToClear = []
-        for deleteItem in totalOfflineDeletes:
-            deleteIdsToClear.append(deleteItem["messageId"])
-            createdUtc = discord.utils.snowflake_time(deleteItem["messageId"])
-            sentTimeStr = createdUtc.astimezone().strftime("%d/%m/%Y %H:%M:%S")
-            
-            embedDelete = discord.Embed(
-                title="Tin nhắn bị xoá (Offline)",
-                color=discord.Color.dark_red(),
-                description=f"Người gửi: <@{deleteItem['authorId']}> ({deleteItem['authorId']})\nKênh: <#{deleteItem['channelId']}>\nThời gian gửi: {sentTimeStr}\nID Tin nhắn: {deleteItem['messageId']}"
-            )
-            embedDelete.set_author(name=deleteItem["authorName"], icon_url=deleteItem["authorAvatar"])
-            embedDelete.add_field(name="Nội dung trước khi xoá", value=f"```\n{deleteItem['content'] if deleteItem['content'] else 'Không có nội dung chữ'}\n```", inline=False)
-            embedDelete.set_footer(text=f"Phát hiện lúc: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-            await logChannel.send(embed=embedDelete)
-            await asyncio.sleep(0.2)
-            
-        if deleteIdsToClear:
-            await asyncio.to_thread(bulkDeleteFromDatabase, deleteIdsToClear)
-                
-    bot.totalScannedMessages = totalScannedMessages
-    bot.globalOldestDate = globalOldestDate
-                
-    finalElapsedTime = time.perf_counter() - scanStartTime
-    if finalElapsedTime >= 60:
-        finalMins, finalSecs = divmod(int(finalElapsedTime), 60)
-        bot.totalScanTimeStr = f"{finalMins} phút {finalSecs} giây"
-    else:
-        bot.totalScanTimeStr = f"{finalElapsedTime:.2f} giây"
-
-    print(f"Hoàn tất nạp {totalScannedMessages} tin nhắn trong {bot.totalScanTimeStr}")
-    
-    process = psutil.Process(os.getpid())
-    ramBytes = process.memory_info().rss
-    ramMB = ramBytes / 1048576
-    print(f"Mức sử dụng RAM: {ramMB:.2f} MB")
-    
-    if globalOldestDate:
-        formattedDate = globalOldestDate.strftime("%d/%m/%Y %H:%M:%S")
-        print(f"Thời gian tin nhắn cũ nhất đã quét: {formattedDate}")
-    else:
-        print("Thời gian tin nhắn cũ nhất đã quét: Không có dữ liệu")
-    print()
-    print("==========================")
-
-async def periodicLoggerTask():
-    if reportTaskSched == "none":
-        return
-    await bot.wait_until_ready()
-    while not bot.is_closed():
-        sleepTime = 3600 if reportTaskSched == "hourly" else 86400
-        await asyncio.sleep(sleepTime)
-        
-        currentTimeStr = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        typeStr = "HÀNG GIỜ" if reportTaskSched == "hourly" else "HÀNG NGÀY"
-        
-        print(f"=== BÁO CÁO THỐNG KÊ {typeStr} ===")
-        print(f"Thời gian: {currentTimeStr}")
-        print(f"Số lượng tin nhắn đã nạp: {bot.totalScannedMessages}")
-        print(f"Đã nạp bao nhiêu tin nhắn mới: {bot.hourlyNewMessages}")
-        print(f"Tin nhắn đã sửa: {bot.hourlyEditedMessages}")
-        print(f"Tin nhắn đã xoá: {bot.hourlyDeletedMessages}")
-        print("=================================")
-        
-        if alsoSendToLogChannel:
-            logChannel = bot.get_channel(logChannelId)
-            if logChannel:
-                embedReport = discord.Embed(
-                    title=f"Báo cáo định kỳ ({typeStr.lower()})",
-                    color=discord.Color.blue()
+                await asyncio.sleep(30)
+                self.watchdog.feedHeartbeat("MetricsTask")
+                dbAvg = self.databaseManager.metricsTracker.dbLatencyEwma * 1000
+                sendAvg = self.logDispatcher.metricsTracker.sendLatencyEwma * 1000
+                dlAvg = self.logDispatcher.metricsTracker.downloadTimeEwma * 1000
+                logger.debug(
+                    f"[METRICS-EWMA] DB Queue: {metricsTracker.dbQueueLength} | Log Queue: {metricsTracker.logQueueLength} | "
+                    f"DB Latency: {dbAvg:.2f}ms | Send Latency: {sendAvg:.2f}ms | Download Time: {dlAvg:.2f}ms | "
+                    f"Throughput: {metricsTracker.currentThroughputRps:.2f} rps | Retries: {metricsTracker.retryCount} | "
+                    f"Hits: {metricsTracker.cacheHits} | Misses: {metricsTracker.cacheMisses} | Dropped: {metricsTracker.queueDroppedCount}"
                 )
-                embedReport.add_field(name="Thời gian phát hành", value=currentTimeStr, inline=False)
-                embedReport.add_field(name="Tổng số tin nhắn hiện tại", value=f"{bot.totalScannedMessages} tin nhắn", inline=True)
-                embedReport.add_field(name="Tin nhắn mới phát sinh", value=f"{bot.hourlyNewMessages} tin nhắn", inline=True)
-                embedReport.add_field(name="Tin nhắn đã chỉnh sửa", value=f"{bot.hourlyEditedMessages} tin nhắn", inline=True)
-                embedReport.add_field(name="Tin nhắn đã xoá bỏ", value=f"{bot.hourlyDeletedMessages} tin nhắn", inline=True)
-                await logChannel.send(embed=embedReport)
+            except asyncio.CancelledError:
+                break
+            except Exception as ex:
+                logger.error(f"Metrics reporting task error: {str(ex)}")
 
-        bot.hourlyNewMessages = 0
-        bot.hourlyEditedMessages = 0
-        bot.hourlyDeletedMessages = 0
+    async def periodicReportTask(self):
+        await self.wait_until_ready()
+        schedType = getattr(config, "reportTaskSched", "hourly")
+        sleepInterval = 3600 if schedType == "hourly" else 86400
+        while True:
+            await asyncio.sleep(sleepInterval)
+            if self.watchdog:
+                self.watchdog.feedHeartbeat("PeriodicReportTask")
+            if getattr(config, "alsoSendToLogChannel", True):
+                await self.generateAndSendReport(False)
 
-@bot.tree.command(name="getstats", description="Lấy trạng thái lưu trữ tin nhắn.", guild=discord.Object(id=targetGuildId))
-@app_commands.default_permissions(administrator=True)
-async def getstats(interaction: discord.Interaction):
-    dbSuccess = initDatabase()
-    dbStatusStr = "Kết nối thành công" if dbSuccess else "Kết nối thất bại"
-    
-    fileSizeKB = 0.0
-    if os.path.exists("bot_log.db"):
-        fileSizeByte = os.path.getsize("bot_log.db")
-        fileSizeKB = fileSizeByte / 1024
+    async def generateAndSendReport(self, isManual):
+        logChannel = self.get_channel(config.logChannelId)
+        if not logChannel:
+            try:
+                logChannel = await self.fetch_channel(config.logChannelId)
+            except Exception as fetchError:
+                logger.error(f"Failed to fetch log channel via API: {str(fetchError)}")
+                return
+        schedType = getattr(config, "reportTaskSched", "hourly")
+        titleKey = "periodicReportHourly" if schedType == "hourly" else "periodicReportDaily"
+        titleText = getLocaleString(titleKey)
+        currentTimeStr = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        totalMsgsStr = getLocaleString("msgCountSuffix", count=self.totalScannedMessages)
+        newMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyNewMessages)
+        editedMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyEditedMessages)
+        deletedMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyDeletedMessages)
+        descriptionContent = (
+            f"**{getLocaleString('publishTime')}**\n{currentTimeStr}\n\n"
+            f"**{getLocaleString('totalCurrentMessages')}**\n{totalMsgsStr}\n\n"
+            f"**{getLocaleString('newMessagesGenerated')}**\n{newMsgsStr}\n\n"
+            f"**{getLocaleString('editedMessagesField')}**\n{editedMsgsStr}\n\n"
+            f"**{getLocaleString('deletedMessagesField')}**\n{deletedMsgsStr}"
+        )
+        embedReport = discord.Embed(
+            title=titleText,
+            color=discord.Color.blue(),
+            description=descriptionContent
+        )
+        await logChannel.send(embed=embedReport)
+        self.hourlyNewMessages = 0
+        self.hourlyEditedMessages = 0
+        self.hourlyDeletedMessages = 0
 
-    totalChannels = 0
-    totalMembers = 0
-    targetGuild = bot.get_guild(targetGuildId)
-    if targetGuild:
-        totalChannels = len(targetGuild.text_channels)
-        totalMembers = targetGuild.member_count
+bot = AdvancedChatBot()
 
-    process = psutil.Process(os.getpid())
-    ramBytes = process.memory_info().rss
-    ramMB = ramBytes / 1048576
+async def main():
+    try:
+        async with bot:
+            print(getLocaleString("botStarting"))
+            await bot.start(config.botToken)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        print(getLocaleString("shuttingDown"))
+        if bot.reportingTask and not bot.reportingTask.done():
+            bot.reportingTask.cancel()
+            try:
+                await bot.reportingTask
+            except asyncio.CancelledError:
+                pass
+        if bot.watchdog.watchdogTask and not bot.watchdog.watchdogTask.done():
+            bot.watchdog.watchdogTask.cancel()
+            try:
+                await bot.watchdog.watchdogTask
+            except asyncio.CancelledError:
+                pass
+        if bot.periodicTask and not bot.periodicTask.done():
+            bot.periodicTask.cancel()
+            try:
+                await bot.periodicTask
+            except asyncio.CancelledError:
+                pass
+        await bot.logDispatcher.flushAndClose()
+        await bot.databaseManager.flushAndClose()
+        await bot.mediaManager.close()
+        await bot.close()
+        print(getLocaleString("shutdownComplete"))
 
-    formattedDate = "Không có dữ liệu"
-    if bot.globalOldestDate:
-        formattedDate = bot.globalOldestDate.strftime("%d/%m/%Y %H:%M:%S")
-
-    uptimeDelta = datetime.now() - bot.bootTime
-    days = uptimeDelta.days
-    hours, remainder = divmod(uptimeDelta.seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    uptimeStr = f"{days} ngày, {hours} giờ, {minutes} phút, {seconds} giây"
-
-    embedStats = discord.Embed(
-        title="Trạng thái của MACB",
-        color=discord.Color.blue()
-    )
-    
-    embedStats.add_field(name="Thống kê Chung", value=f"**Uptime:** {uptimeStr}", inline=False)
-    embedStats.add_field(name="Thông tin Bot", value=f"**Username:** {bot.user.name}\n**ID:** {bot.user.id}", inline=False)
-    
-    dbCombinedValue = (
-        f"**Trạng thái:** {dbStatusStr}\n"
-        f"**Kích thước tệp:** {fileSizeKB:.2f} KB\n"
-        f"**Tin nhắn đã nạp:** {bot.totalScannedMessages}\n"
-        f"**Thời gian nạp:** {bot.totalScanTimeStr}\n"
-        f"**Thời gian cũ nhất:** {formattedDate}"
-    )
-    embedStats.add_field(name="Cơ sở dữ liệu", value=dbCombinedValue, inline=False)
-    
-    embedStats.add_field(name="Thống kê Máy chủ", value=f"**Kênh giám sát:** {totalChannels}\n**Tổng số người:** {totalMembers}", inline=False)
-    embedStats.add_field(name="Tài nguyên", value=f"**Mức sử dụng RAM:** {ramMB:.2f} MB", inline=False)
-    embedStats.add_field(name="Discord Hỗ trợ", value="https://dsc.gg/meowsmp", inline=False)
-
-    embedStats.set_footer(text="Bot by @meowice\nSource: https://github.com/MeowIce/macb")
-
-    await interaction.response.send_message(embed=embedStats)
-
-@bot.event
-async def on_ready():
-    if bot.bootTime is None:
-        bot.bootTime = datetime.now()
-        
-    print(f"Bot Username: {bot.user.name}")
-    print(f"Bot ID: {bot.user.id}")
-    print(f"Chế độ báo cáo định kỳ: {reportTaskSched}")
-    print(f"Gửi báo cáo vào kênh log: {'Có' if alsoSendToLogChannel else 'Không'}")
-    print()
-    
-    dbSuccess = initDatabase()
-    if dbSuccess:
-        print("Trạng thái Database: Kết nối thành công")
-        if os.path.exists("bot_log.db"):
-            fileSizeByte = os.path.getsize("bot_log.db")
-            fileSizeKB = fileSizeByte / 1024
-            print(f"Kích thước tệp Database: {fileSizeKB:.2f} KB")
-    else:
-        print("Trạng thái Database: Kết nối thất bại")
-    print()
-
-    targetGuild = bot.get_guild(targetGuildId)
-    if targetGuild:
-        totalChannels = len(targetGuild.text_channels)
-        totalMembers = targetGuild.member_count
-        print(f"Số lượng kênh đang giám sát: {totalChannels}")
-        print(f"Tổng số người trong máy chủ: {totalMembers}")
-        print()
-        
-        try:
-            await bot.tree.sync(guild=discord.Object(id=targetGuildId))
-            print("Đã đồng bộ Slash Command thành công")
-        except Exception as e:
-            print(f"Lỗi đồng bộ Slash Command: {e}")
-        print()
-        
-        asyncio.create_task(backgroundScanTask(targetGuild))
-        
-        if reportTaskSched != "none" and not bot.loggerTaskStarted:
-            bot.loggerTaskStarted = True
-            asyncio.create_task(periodicLoggerTask())
-    print()
-
-@bot.event
-async def on_message(message):
-    if message.guild is None or message.guild.id != targetGuildId:
-        return
-    if message.author.bot:
-        return
-    url = ""
-    if message.attachments:
-        url = message.attachments[0].url
-    elif message.stickers:
-        url = message.stickers[0].url
-    avatarUrl = message.author.display_avatar.url if message.author.display_avatar else ""
-    saveToDatabase(message.id, message.author.id, message.author.name, avatarUrl, message.channel.id, message.content, url)
-    bot.totalScannedMessages += 1
-    bot.hourlyNewMessages += 1
-    await bot.process_commands(message)
-
-@bot.event
-async def on_raw_message_delete(payload):
-    if payload.guild_id != targetGuildId:
-        return
-        
-    messageData = getFromDatabase(payload.message_id)
-    if not messageData:
-        return
-        
-    logChannel = bot.get_channel(logChannelId)
-    if not logChannel:
-        return
-        
-    authorId = messageData[1]
-    authorName = messageData[2]
-    authorAvatar = messageData[3]
-    channelId = messageData[4]
-    content = messageData[5]
-    attachmentUrl = messageData[6]
-    
-    deleteFromDatabase(payload.message_id)
-    bot.totalScannedMessages -= 1
-    bot.hourlyDeletedMessages += 1
-    
-    createdUtc = discord.utils.snowflake_time(payload.message_id)
-    createdLocal = createdUtc.astimezone()
-    sentTimeStr = createdLocal.strftime("%d/%m/%Y %H:%M:%S")
-    
-    messageType = "Văn bản"
-    isSticker = False
-    if attachmentUrl:
-        if "/stickers/" in attachmentUrl:
-            messageType = "Sticker"
-            isSticker = True
-        else:
-            filenameLower = attachmentUrl.split("/")[-1].split("?")[0].lower()
-            if any(filenameLower.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]):
-                messageType = "Media (Hình ảnh)"
-            elif filenameLower.endswith(".gif"):
-                messageType = "Media (Ảnh động GIF)"
-            elif any(filenameLower.endswith(ext) for ext in [".mp4", ".mov", ".webm"]):
-                messageType = "Media (Video)"
-            else:
-                messageType = "Media (Tệp đính kèm)"
-
-    embedMessage = discord.Embed(
-        title="Tin nhắn bị xoá",
-        color=discord.Color.red(),
-        description=f"Người gửi: <@{authorId}> ({authorId})\nKênh: <#{channelId}>\nThời gian gửi: {sentTimeStr}\nID Tin nhắn: {payload.message_id}"
-    )
-    embedMessage.set_author(name=authorName, icon_url=authorAvatar)
-    
-    currentTime = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    embedMessage.set_footer(text=f"Thời gian: {currentTime}")
-    
-    embedMessage.add_field(name="Loại tin nhắn", value=messageType, inline=False)
-    
-    if content:
-        displayContent = content
-    else:
-        displayContent = "[Tin nhắn Sticker]" if isSticker else "[Tin nhắn không chứa nội dung chữ]"
-        
-    embedMessage.add_field(name="Nội dung", value=f"```\n{displayContent}\n```", inline=False)
-        
-    logFile = None
-    if attachmentUrl and not isSticker:
-        logFile = await mediaDownloader(attachmentUrl)
-        if logFile:
-            filenameCheck = logFile.filename.lower()
-            isImage = any(filenameCheck.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"])
-            if isImage:
-                embedMessage.set_image(url=f"attachment://{logFile.filename}")
-            
-    if logFile:
-        await logChannel.send(embed=embedMessage, file=logFile)
-    else:
-        await logChannel.send(embed=embedMessage)
-
-@bot.event
-async def on_raw_message_edit(payload):
-    if payload.guild_id != targetGuildId:
-        return
-    if "content" not in payload.data:
-        return
-        
-    messageId = payload.message_id
-    oldData = getFromDatabase(messageId)
-    if not oldData:
-        return
-        
-    newContent = payload.data["content"]
-    oldContent = oldData[5]
-    if oldContent == newContent:
-        return
-        
-    authorId = oldData[1]
-    authorName = oldData[2]
-    authorAvatar = oldData[3]
-    channelId = oldData[4]
-    attachmentUrl = oldData[6]
-    
-    bot.hourlyEditedMessages += 1
-    
-    createdUtc = discord.utils.snowflake_time(messageId)
-    createdLocal = createdUtc.astimezone()
-    sentTimeStr = createdLocal.strftime("%d/%m/%Y %H:%M:%S")
-    
-    messageType = "Văn bản"
-    if attachmentUrl:
-        if "/stickers/" in attachmentUrl:
-            messageType = "Văn bản & Sticker" if (newContent or oldContent) else "Sticker"
-        else:
-            filenameLower = attachmentUrl.split("/")[-1].split("?")[0].lower()
-            if any(filenameLower.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]):
-                messageType = "Văn bản & Media (Hình ảnh)"
-            elif filenameLower.endswith(".gif"):
-                messageType = "VBT & Media (Ảnh động GIF)"
-            elif any(filenameLower.endswith(ext) for ext in [".mp4", ".mov", ".webm"]):
-                messageType = "Văn bản & Media (Video)"
-            else:
-                messageType = "Văn bản & Media (Tệp đính kèm)"
-            
-    updateDatabaseContent(messageId, newContent)
-    
-    logChannel = bot.get_channel(logChannelId)
-    if not logChannel:
-        return
-        
-    embedMessage = discord.Embed(
-        title="Tin nhắn bị chỉnh sửa",
-        color=discord.Color.orange(),
-        description=f"Người gửi: <@{authorId}> ({authorId})\nKênh: <#{channelId}>\nThời gian gửi: {sentTimeStr}\nID Tin nhắn: {messageId}"
-    )
-    embedMessage.set_author(name=authorName, icon_url=authorAvatar)
-    
-    currentTime = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    embedMessage.set_footer(text=f"Thời gian: {currentTime}")
-    
-    embedMessage.add_field(name="Loại tin nhắn", value=messageType, inline=False)
-    
-    beforeContent = oldContent if oldContent else "Không có nội dung chữ"
-    afterContent = newContent if newContent else "Không có nội dung chữ"
-    
-    embedMessage.add_field(name="Trước khi sửa", value=f"```\n{beforeContent}\n```", inline=False)
-    embedMessage.add_field(name="Sau khi sửa", value=f"```\n{afterContent}\n```", inline=False)
-    
-    await logChannel.send(embed=embedMessage)
-
-print("MACB đang khởi động...")
-bot.run(botToken, log_handler=None)
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        sys.exit(0)
