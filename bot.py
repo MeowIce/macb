@@ -33,9 +33,6 @@ class MetricsTracker:
         self.alpha = 0.2
         self.lastThroughputCheck = time.perf_counter()
         self.currentThroughputRps = 0.0
-        self.hourlyNewMessages = 0
-        self.hourlyEditedMessages = 0
-        self.hourlyDeletedMessages = 0
 
     def updateDbQueue(self, length):
         self.dbQueueLength = length
@@ -212,11 +209,11 @@ class MACB(commands.Bot):
     async def setup_hook(self):
         self.botEvents.setupEvents()
         self.watchdog.watchdogTask = self.loop.create_task(self.watchdog.startWatchdogLoop())
-        self.metricsTask = self.loop.create_task(self.metricsmetricsTask())
+        self.metricsTask = self.loop.create_task(self.metricsReportingTask())
         self.mediaManager.cacheTask = self.loop.create_task(self.mediaManager.cleanCacheTask())
         self.periodicTask = self.loop.create_task(self.periodicReportTask())
 
-    async def metricsmetricsTask(self):
+    async def metricsReportingTask(self):
         while True:
             try:
                 await asyncio.sleep(30)
