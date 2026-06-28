@@ -2,7 +2,7 @@
 The most advanced, high-performance, and memory-efficient Discord chat logging bot. Built for large-scale communities.
 
 ---
-
+Languages: [[Tiếng Việt]](https://github.com/MeowIce/macb/blob/main/README_vn.md) | `[English]`
 ## What Makes MACB Stand Out ?
 
 ### For Users & Moderators
@@ -15,7 +15,7 @@ The most advanced, high-performance, and memory-efficient Discord chat logging b
 * **Optimized Media Rendering** - Displays images and GIFs directly inside embeds while presenting videos as playable attachments for reliable desktop and mobile viewing.
 
 ### Performance & Efficiency
-* **Fast First-Startup Indexing** - Synchronizes existing server history at over **820 messages/sec**, indexing **27,000+ messages** in under **33 seconds**.
+* **Fast Indexing** - Synchronizes & Indexes existing server history at over **820 messages/sec**, indexing **27,000+ messages** in under **33 seconds**.
 * **SQLite WAL Architecture** - Uses dedicated read and write connections with WAL mode to support concurrent database operations efficiently.
 * **Delta-Based Startup Scan** - Only scans channels that have changed since the previous shutdown, dramatically reducing startup time on large servers.
 * **Batch Database Writes** - Buffers and commits messages in large batches to minimize disk I/O and maximize throughput.
@@ -23,7 +23,7 @@ The most advanced, high-performance, and memory-efficient Discord chat logging b
 * **Designed for Large Communities** - Optimized to process large Discord servers with minimal CPU, memory, and database overhead.
 
 ### Administration & Reliability
-* **`/getstats`** - Displays live uptime, database statistics, indexed message count, RAM usage, scan duration, and server information.
+* **Slash Commands** - Displays live uptime, database statistics, indexed message count, RAM usage, scan duration, and server information.
 * **Startup Log Batching** - Groups thousands of offline edits and deletions into compact batch reports, reducing Discord REST requests by over **95%** and virtually eliminating HTTP 429 rate limits.
 * **Scheduled Activity Reports** - Automatically sends hourly or daily moderation summaries to your configured log channel.
 * **Multi-language Support** - Supports both English (`en`) and Vietnamese (`vi`) through a single configuration option.
