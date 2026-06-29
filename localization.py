@@ -140,6 +140,8 @@ stringsMap = {
         "heartbeatAgeSuffix": "{value:.1f} giây trước",
         "reportScheduleHourlyValue": "hàng giờ",
         "reportScheduleDailyValue": "hàng ngày",
+        "consoleReportHeader": "HỆ THỐNG: {type}",
+        "targetLogChannelIdField": "ID Kênh nhận Log",
     },
     "en": {
         "text": "Text",
@@ -280,6 +282,8 @@ stringsMap = {
         "heartbeatAgeSuffix": "{value:.1f}s ago",
         "reportScheduleHourlyValue": "hourly",
         "reportScheduleDailyValue": "daily",
+        "consoleReportHeader": "SYSTEM: {type}",
+        "targetLogChannelIdField": "Log Channel ID",
     }
 }
 

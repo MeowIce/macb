@@ -271,8 +271,6 @@ class MACB(commands.Bot):
         titleKey = "periodicReportHourly" if schedType == "hourly" else "periodicReportDaily"
         titleText = getLocaleString(titleKey)
         currentTimeStr = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        
-        # Query total message count directly from database to match /getstats
         totalMsgsCount = await asyncio.to_thread(self.databaseManager.getTotalMessageCount)
         totalMsgsStr = getLocaleString("msgCountSuffix", count=totalMsgsCount)
         newMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyNewMessages)
@@ -291,6 +289,23 @@ class MACB(commands.Bot):
             description=descriptionContent
         )
         await logChannel.send(embed=embedReport)
+        
+        consoleDivider = "=" * 55
+        consoleReportBlock = (
+            f"\n{consoleDivider}\n"
+            f" {getLocaleString('consoleReportHeader', type=titleText.upper())}\n"
+            f" {consoleDivider}\n"
+            f" {getLocaleString('targetLogChannelIdField')}: {config.logChannelId}\n"
+            f" {getLocaleString('publishTime')}: {currentTimeStr}\n"
+            f" -----------------------------------------------------\n"
+            f" {getLocaleString('totalCurrentMessages')}: {totalMsgsStr}\n"
+            f" {getLocaleString('newMessagesGenerated')}: {newMsgsStr}\n"
+            f" {getLocaleString('editedMessagesField')}: {editedMsgsStr}\n"
+            f" {getLocaleString('deletedMessagesField')}: {deletedMsgsStr}\n"
+            f"{consoleDivider}"
+        )
+        logger.info(consoleReportBlock)
+        
         self.hourlyNewMessages = 0
         self.hourlyEditedMessages = 0
         self.hourlyDeletedMessages = 0
