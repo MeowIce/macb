@@ -10,6 +10,21 @@ import gc
 
 logger = logging.getLogger("MacbLogger")
 
+def cleanAttachmentUrl(urlStr):
+    if not urlStr:
+        return ""
+    return urlStr.split("?")[0]
+
+def normalizeTimestamp(dtObj):
+    if not dtObj:
+        return None
+    return int(dtObj.timestamp())
+
+def checkMessageEditStatus(dbContent, discordMsg):
+    oldContent = dbContent if dbContent is not None else ""
+    newContent = discordMsg.content if discordMsg.content is not None else ""
+    return oldContent != newContent
+
 class StartupScanner:
     def __init__(self, bot):
         self.bot = bot
@@ -64,7 +79,6 @@ class StartupScanner:
         self.bot.totalScanTimeStr = f"{duration:.2f}"
         self.bot.scanComplete = True
         
-        # Sync the memory variable with actual DB count
         self.bot.totalCachedMessages = await asyncio.to_thread(self.bot.databaseManager.getTotalMessageCount)
         
         if isFirstScan:
@@ -78,7 +92,6 @@ class StartupScanner:
         print(getLocaleString("oldestMsgStr", date=oldestDateText))
         print()
         
-        # Trigger Garbage Collection to free memory occupied by transient startup data
         gc.collect()
 
     async def scanChannelAdaptive(self, channel, maxLocalId, isFirstScan):
@@ -96,14 +109,12 @@ class StartupScanner:
                     localMsgCount += 1
                     fetchedMessagesList.append(msg)
             else:
-                # Quét 100 tin nhắn mới nhất để phục vụ phát hiện sửa/xóa vùng hoạt náo gần đây
                 async for msg in channel.history(limit=100, oldest_first=False):
                     if msg.author.bot:
                         continue
                     localMsgCount += 1
                     fetchedMessagesList.append(msg)
                     
-                # Quét bám đuổi từ mốc cục bộ để lấy toàn bộ tin nhắn mới tinh gửi trong lúc bot offline
                 if maxLocalId:
                     async for extraMsg in channel.history(after=discord.Object(id=maxLocalId), limit=200, oldest_first=True):
                         if extraMsg.author.bot:
@@ -135,24 +146,40 @@ class StartupScanner:
                     if dbRow:
                         dbAuthorId, dbAuthorName, dbAuthorAvatar, dbContent, dbAttachmentsRaw, dbReplyRefRaw, dbContentTypesRaw = dbRow
                         
-                        if not msg.attachments and dbAttachmentsRaw == "[]" and dbContentTypesRaw == "[]":
-                            currentAttachmentsRaw = "[]"
-                            currentContentTypesRaw = "[]"
-                        else:
-                            currentAttachmentsRaw = json.dumps([att.url for att in msg.attachments])
-                            currentContentTypesRaw = json.dumps([att.content_type for att in msg.attachments])
+                        currentAttachmentsRaw = json.dumps([att.url for att in msg.attachments]) if msg.attachments else "[]"
+                        currentContentTypesRaw = json.dumps([att.content_type for att in msg.attachments]) if msg.attachments else "[]"
+                        currentReplyRefRaw = json.dumps({"messageId": msg.reference.message_id, "channelId": msg.reference.channel_id} if msg.reference and msg.reference.message_id else {})
+
+                        try:
+                            rawDbAttList = json.loads(dbAttachmentsRaw) if dbAttachmentsRaw else []
+                            cleanDbAtts = [cleanAttachmentUrl(u) for u in rawDbAttList]
+                        except Exception:
+                            cleanDbAtts = []
                             
-                        if not msg.reference and dbReplyRefRaw == "{}":
-                            currentReplyRefRaw = "{}"
-                        else:
-                            currentReplyRefRaw = json.dumps({"messageId": msg.reference.message_id, "channelId": msg.reference.channel_id} if msg.reference and msg.reference.message_id else {})
-                            
-                        isContentEqual = (dbContent == msg.content)
-                        isAttachmentsEqual = (dbAttachmentsRaw == currentAttachmentsRaw)
-                        isContentTypesEqual = (dbContentTypesRaw == currentContentTypesRaw)
-                        isReplyEqual = (dbReplyRefRaw == currentReplyRefRaw)
+                        cleanCurrentAtts = [cleanAttachmentUrl(att.url) for att in msg.attachments]
                         
-                        if not (isContentEqual and isAttachmentsEqual and isContentTypesEqual and isReplyEqual):
+                        try:
+                            rawDbTypesList = json.loads(dbContentTypesRaw) if dbContentTypesRaw else []
+                        except Exception:
+                            rawDbTypesList = []
+                            
+                        currentTypesList = [att.content_type for att in msg.attachments]
+                        
+                        dbReplyId = None
+                        try:
+                            parsedReply = json.loads(dbReplyRefRaw) if dbReplyRefRaw else {}
+                            dbReplyId = parsedReply.get("messageId")
+                        except Exception:
+                            dbReplyId = None
+                            
+                        currentReplyId = msg.reference.message_id if msg.reference else None
+                        
+                        isContentModified = checkMessageEditStatus(dbContent, msg)
+                        isAttachmentsEqual = (cleanDbAtts == cleanCurrentAtts)
+                        isContentTypesEqual = (rawDbTypesList == currentTypesList)
+                        isReplyEqual = (dbReplyId == currentReplyId)
+                        
+                        if isContentModified or not (isAttachmentsEqual and isContentTypesEqual and isReplyEqual):
                             dbUpdatesList.append((msg.content, currentAttachmentsRaw, currentContentTypesRaw, msgId))
                             avatarUrl = msg.author.display_avatar.url if msg.author.display_avatar else ""
                             offlineEditsCollected.append({
@@ -160,8 +187,8 @@ class StartupScanner:
                                 "authorId": msg.author.id,
                                 "authorName": msg.author.name,
                                 "authorAvatar": avatarUrl,
-                                "oldContent": dbContent,
-                                "newContent": msg.content,
+                                "oldContent": dbContent if dbContent is not None else "",
+                                "newContent": msg.content if msg.content is not None else "",
                                 "contentTypes": currentContentTypesRaw
                             })
                 else:
@@ -196,7 +223,6 @@ class StartupScanner:
                 for cId in localCacheMap.keys():
                     if cId not in fetchedIdsSet:
                         dbRow = localCacheMap[cId]
-                        # dbRow: (authorId, authorName, authorAvatar, content, attachments, replyReference, contentTypes)
                         attachmentsList = []
                         try:
                             attachmentsList = json.loads(dbRow[4]) if dbRow[4] else []
