@@ -24,20 +24,41 @@ class DatabaseManager:
         conn.execute("PRAGMA synchronous=NORMAL;")
         return conn
 
+    def _isConnectionHealthy(self, conn):
+        if not conn:
+            return False
+        try:
+            conn.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
+
     def initDatabase(self):
         try:
-            self.writeConn = sqlite3.connect(config.dbPath, check_same_thread=False)
-            self.writeConn.execute("PRAGMA journal_mode=WAL;")
-            self.writeConn.execute("PRAGMA busy_timeout=5000;")
-            self.writeConn.execute("PRAGMA synchronous=NORMAL;")
+            if not self._isConnectionHealthy(self.writeConn):
+                if self.writeConn:
+                    try:
+                        self.writeConn.close()
+                    except Exception:
+                        pass
+                self.writeConn = sqlite3.connect(config.dbPath, check_same_thread=False)
+                self.writeConn.execute("PRAGMA journal_mode=WAL;")
+                self.writeConn.execute("PRAGMA busy_timeout=5000;")
+                self.writeConn.execute("PRAGMA synchronous=NORMAL;")
             
-            self.sharedReadConn = sqlite3.connect(config.dbPath, isolation_level=None, check_same_thread=False)
-            self.sharedReadConn.execute("PRAGMA journal_mode=WAL;")
-            self.sharedReadConn.execute("PRAGMA busy_timeout=5000;")
-            self.sharedReadConn.execute("PRAGMA synchronous=NORMAL;")
-            self.sharedReadConn.execute("PRAGMA mmap_size=268435456;")
-            self.sharedReadConn.execute("PRAGMA cache_size=-64000;")
-            self.sharedReadConn.execute("PRAGMA temp_store=MEMORY;")
+            if not self._isConnectionHealthy(self.sharedReadConn):
+                if self.sharedReadConn:
+                    try:
+                        self.sharedReadConn.close()
+                    except Exception:
+                        pass
+                self.sharedReadConn = sqlite3.connect(config.dbPath, isolation_level=None, check_same_thread=False)
+                self.sharedReadConn.execute("PRAGMA journal_mode=WAL;")
+                self.sharedReadConn.execute("PRAGMA busy_timeout=5000;")
+                self.sharedReadConn.execute("PRAGMA synchronous=NORMAL;")
+                self.sharedReadConn.execute("PRAGMA mmap_size=268435456;")
+                self.sharedReadConn.execute("PRAGMA cache_size=-64000;")
+                self.sharedReadConn.execute("PRAGMA temp_store=MEMORY;")
             
             cursor = self.writeConn.cursor()
             cursor.execute("""
@@ -71,17 +92,27 @@ class DatabaseManager:
             return False
 
     def startWorker(self, loop):
-        if self.isReady and self.workerTask is None:
+        if self.isReady and (self.workerTask is None or self.workerTask.done()):
             self.workerTask = loop.create_task(self.dbWorker())
 
     async def enqueueAction(self, actionType, actionData):
+        if not self.isReady:
+            logger.warning(f"DB not ready; dropping action {actionType}")
+            return
         try:
-            self.dbQueue.put_nowait((actionType, actionData))
+            await asyncio.wait_for(self.dbQueue.put((actionType, actionData)), timeout=5.0)
+            if self.metricsTracker:
+                self.metricsTracker.updateDbQueue(self.dbQueue.qsize())
+        except asyncio.TimeoutError:
+            logger.error(f"DB queue full; dropping action {actionType}")
+            if self.metricsTracker:
+                self.metricsTracker.incrementQueueDropped()
         except Exception as ex:
             logger.error(f"Error enqueuing database action: {str(ex)}")
 
     async def dbWorker(self):
         while True:
+            actions = []
             try:
                 if self.bot and hasattr(self.bot, "watchdog"):
                     self.bot.watchdog.feedHeartbeat("DatabaseWorker")
@@ -89,7 +120,7 @@ class DatabaseManager:
                     action = await asyncio.wait_for(self.dbQueue.get(), timeout=1.0)
                 except asyncio.TimeoutError:
                     continue
-                
+
                 actions = [action]
                 while not self.dbQueue.empty() and len(actions) < 100:
                     try:
@@ -97,58 +128,60 @@ class DatabaseManager:
                         actions.append(nextAction)
                     except asyncio.QueueEmpty:
                         break
-                        
-                cursor = self.writeConn.cursor()
-                for actType, actData in actions:
-                    if actType == "save":
-                        cursor.execute("""
-                            INSERT INTO cachedMessages (
-                                messageId, authorId, authorName, authorDisplayName, authorGlobalName, authorAvatar,
-                                channelId, channelName, parentChannelName, content, attachments, stickers, embeds,
-                                replyReference, messageType, contentTypes
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT(messageId) DO UPDATE SET
-                                authorName=excluded.authorName,
-                                authorDisplayName=excluded.authorDisplayName,
-                                authorGlobalName=excluded.authorGlobalName,
-                                authorAvatar=excluded.authorAvatar,
-                                content=excluded.content,
-                                attachments=excluded.attachments,
-                                contentTypes=excluded.contentTypes
-                        """, actData)
-                    elif actType == "bulkSave":
-                        cursor.executemany("""
-                            INSERT INTO cachedMessages (
-                                messageId, authorId, authorName, authorDisplayName, authorGlobalName, authorAvatar,
-                                channelId, channelName, parentChannelName, content, attachments, stickers, embeds,
-                                replyReference, messageType, contentTypes
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT(messageId) DO UPDATE SET
-                                authorName=excluded.authorName,
-                                authorDisplayName=excluded.authorDisplayName,
-                                authorGlobalName=excluded.authorGlobalName,
-                                authorAvatar=excluded.authorAvatar,
-                                content=excluded.content,
-                                attachments=excluded.attachments,
-                                contentTypes=excluded.contentTypes
-                        """, actData)
-                    elif actType == "bulkUpdateOffline":
-                        cursor.executemany("UPDATE cachedMessages SET content=?, attachments=?, contentTypes=? WHERE messageId=?", actData)
-                    elif actType == "bulkDelete":
-                        cursor.executemany("DELETE FROM cachedMessages WHERE messageId = ?", [(mId,) for mId in actData])
-                    elif actType == "delete":
-                        cursor.execute("DELETE FROM cachedMessages WHERE messageId = ?", (actData,))
-                    elif actType == "updateFields":
-                        mId, fields = actData
-                        setClauses = ", ".join([f"{k} = ?" for k in fields.keys()])
-                        values = list(fields.values()) + [mId]
-                        cursor.execute(f"UPDATE cachedMessages SET {setClauses} WHERE messageId = ?", values)
-                        
-                self.writeConn.commit()
-                cursor.close()
-                
-                for _ in range(len(actions)):
-                    self.dbQueue.task_done()
+
+                try:
+                    cursor = self.writeConn.cursor()
+                    for actType, actData in actions:
+                        if actType == "save":
+                            cursor.execute("""
+                                INSERT INTO cachedMessages (
+                                    messageId, authorId, authorName, authorDisplayName, authorGlobalName, authorAvatar,
+                                    channelId, channelName, parentChannelName, content, attachments, stickers, embeds,
+                                    replyReference, messageType, contentTypes
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ON CONFLICT(messageId) DO UPDATE SET
+                                    authorName=excluded.authorName,
+                                    authorDisplayName=excluded.authorDisplayName,
+                                    authorGlobalName=excluded.authorGlobalName,
+                                    authorAvatar=excluded.authorAvatar,
+                                    content=excluded.content,
+                                    attachments=excluded.attachments,
+                                    contentTypes=excluded.contentTypes
+                            """, actData)
+                        elif actType == "bulkSave":
+                            cursor.executemany("""
+                                INSERT INTO cachedMessages (
+                                    messageId, authorId, authorName, authorDisplayName, authorGlobalName, authorAvatar,
+                                    channelId, channelName, parentChannelName, content, attachments, stickers, embeds,
+                                    replyReference, messageType, contentTypes
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ON CONFLICT(messageId) DO UPDATE SET
+                                    authorName=excluded.authorName,
+                                    authorDisplayName=excluded.authorDisplayName,
+                                    authorGlobalName=excluded.authorGlobalName,
+                                    authorAvatar=excluded.authorAvatar,
+                                    content=excluded.content,
+                                    attachments=excluded.attachments,
+                                    contentTypes=excluded.contentTypes
+                            """, actData)
+                        elif actType == "bulkUpdateOffline":
+                            cursor.executemany("UPDATE cachedMessages SET content=?, attachments=?, contentTypes=? WHERE messageId=?", actData)
+                        elif actType == "bulkDelete":
+                            cursor.executemany("DELETE FROM cachedMessages WHERE messageId = ?", [(mId,) for mId in actData])
+                        elif actType == "delete":
+                            cursor.execute("DELETE FROM cachedMessages WHERE messageId = ?", (actData,))
+                        elif actType == "updateFields":
+                            mId, fields = actData
+                            setClauses = ", ".join([f"{k} = ?" for k in fields.keys()])
+                            values = list(fields.values()) + [mId]
+                            cursor.execute(f"UPDATE cachedMessages SET {setClauses} WHERE messageId = ?", values)
+                    self.writeConn.commit()
+                    cursor.close()
+                except Exception as batchError:
+                    logger.error(f"Error processing database batch: {str(batchError)}")
+                finally:
+                    for _ in range(len(actions)):
+                        self.dbQueue.task_done()
             except asyncio.CancelledError:
                 break
             except Exception as workerError:

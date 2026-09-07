@@ -52,12 +52,12 @@ class LogDispatcher:
         self.workerTasks = []
 
     def startLoops(self, loop):
-        self.workerTasks = []
-        for _ in range(config.logConsumerWorkersCount):
-            self.workerTasks.append(loop.create_task(self.logConsumerWorker()))
+        aliveWorkers = [task for task in self.workerTasks if not task.done()]
+        if aliveWorkers:
+            return
+        self.workerTasks = [loop.create_task(self.logConsumerWorker()) for _ in range(config.logConsumerWorkersCount)]
 
     def startWorkers(self, loop):
-        """Alias for startLoops for backward compatibility."""
         self.startLoops(loop)
 
     async def enqueueLogAction(self, actionPayload):
@@ -74,6 +74,7 @@ class LogDispatcher:
 
     async def logConsumerWorker(self):
         while True:
+            actionPayload = None
             try:
                 if self.bot and hasattr(self.bot, "watchdog"):
                     self.bot.watchdog.feedHeartbeat("LogDispatcherWorker")
@@ -82,12 +83,18 @@ class LogDispatcher:
                 except asyncio.TimeoutError:
                     continue
                 startTime = time.perf_counter()
-                await self.executeLogPipeline(actionPayload)
-                if self.metricsTracker:
-                    self.metricsTracker.recordSendLatency(time.perf_counter() - startTime)
-                    self.metricsTracker.updateLogQueue(self.logQueue.qsize())
-                self.logQueue.task_done()
+                try:
+                    await self.executeLogPipeline(actionPayload)
+                    if self.metricsTracker:
+                        self.metricsTracker.recordSendLatency(time.perf_counter() - startTime)
+                        self.metricsTracker.updateLogQueue(self.logQueue.qsize())
+                except Exception as pipelineError:
+                    logger.error(f"Error in log pipeline: {str(pipelineError)}", exc_info=True)
+                finally:
+                    self.logQueue.task_done()
             except asyncio.CancelledError:
+                if actionPayload is not None:
+                    self.logQueue.task_done()
                 break
             except Exception as workerError:
                 logger.error(f"Error in log consumer worker: {str(workerError)}", exc_info=True)

@@ -157,9 +157,22 @@ class DummyMediaManager:
     async def downloadMediaBytes(self, url):
         if not self.session:
             return None
-        async with self.session.get(url, timeout=15) as response:
+        maxBytes = config.maxPayloadBytesLimit
+        async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
             response.raise_for_status()
-            return await response.read()
+            contentLength = response.headers.get("Content-Length")
+            if contentLength and int(contentLength) > maxBytes:
+                logger.warning(f"Skipping download; Content-Length {contentLength} exceeds limit: {url}")
+                return None
+            chunks = []
+            bytesRead = 0
+            async for chunk in response.content.iter_chunked(65536):
+                bytesRead += len(chunk)
+                if bytesRead > maxBytes:
+                    logger.warning(f"Download aborted at byte limit {maxBytes}: {url}")
+                    return None
+                chunks.append(chunk)
+            return b"".join(chunks)
 
     async def close(self):
         if self.cacheTask and not self.cacheTask.done():
@@ -210,7 +223,6 @@ class MACB(commands.Bot):
         self.botEvents.setupEvents()
         self.watchdog.watchdogTask = self.loop.create_task(self.watchdog.startWatchdogLoop())
         self.metricsTask = self.loop.create_task(self.metricsReportingTask())
-        self.mediaManager.cacheTask = self.loop.create_task(self.mediaManager.cleanCacheTask())
         self.periodicTask = self.loop.create_task(self.periodicReportTask())
 
     async def metricsReportingTask(self):

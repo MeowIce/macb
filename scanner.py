@@ -99,11 +99,11 @@ class StartupScanner:
         try:
             if isinstance(channel, discord.Thread) and channel.archived:
                 return
-                
+
             fetchedMessagesList = []
-            
+
             if isFirstScan:
-                async for msg in channel.history(limit=config.scanSize, oldest_first=False):
+                async for msg in channel.history(limit=None, oldest_first=False):
                     if msg.author.bot:
                         continue
                     localMsgCount += 1
@@ -114,14 +114,14 @@ class StartupScanner:
                         continue
                     localMsgCount += 1
                     fetchedMessagesList.append(msg)
-                    
+
                 if maxLocalId:
-                    async for extraMsg in channel.history(after=discord.Object(id=maxLocalId), limit=200, oldest_first=True):
+                    async for extraMsg in channel.history(after=discord.Object(id=maxLocalId), limit=None, oldest_first=True):
                         if extraMsg.author.bot:
                             continue
                         localMsgCount += 1
                         fetchedMessagesList.append(extraMsg)
-                        
+
             if not fetchedMessagesList:
                 return
                 

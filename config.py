@@ -1,10 +1,6 @@
-# ==============================================================================
-# 1. CONNECTION & DATABASE CONFIGURATION / CẤU HÌNH KẾT NỐI VÀ CƠ SỞ DỮ LIỆU
-# ==============================================================================
+import os
 
-# Discord Bot authentication token (obtained from Discord Developer Portal)
-# Token xác thực Bot Discord (lấy từ Discord Developer Portal)
-botToken = "YOUR_DISCORD_BOT_TOKEN"
+botToken = os.environ.get("MACB_TOKEN", "YOUR_DISCORD_BOT_TOKEN")
 
 # Target Discord Guild (Server) ID to be monitored
 # ID của máy chủ Discord cần giám sát nhật ký

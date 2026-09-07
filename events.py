@@ -5,7 +5,7 @@ import asyncio
 import os
 import psutil
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 import config
 from localization import getLocaleString
 import collections
@@ -19,6 +19,9 @@ class BotEvents:
         self.bulkDeletedIds = set()
         self.bulkDeletedQueue = collections.deque(maxlen=20000)
         self.bulkLock = asyncio.Lock()
+        self.isInitialized = False
+        self.initLock = asyncio.Lock()
+        self.startupScanTask = None
 
     def setupEvents(self):
         @self.bot.event
@@ -56,22 +59,30 @@ class BotEvents:
             print(getLocaleString("totalMembers", count=totalMembers))
             print()
             
-            if dbSuccess:
+            async with self.initLock:
+                if self.isInitialized:
+                    return
+
+                if not dbSuccess:
+                    return
+
                 self.bot.databaseManager.startWorker(asyncio.get_running_loop())
                 self.bot.mediaManager.initialize()
-                asyncio.get_running_loop().create_task(self.bot.mediaManager.cleanCacheTask())
-            
-            if targetGuild:
-                try:
-                    await self.bot.tree.sync(guild=discord.Object(id=config.targetGuildId))
-                    print(getLocaleString("syncSlash"))
-                    print()
-                    print()
-                except Exception as syncError:
-                    logger.error(f"Slash sync error: {str(syncError)}")
-                
-                self.bot.logDispatcher.startWorkers(asyncio.get_running_loop())
-                asyncio.create_task(self.bot.startupScanner.executeScan(targetGuild))
+                self.bot.mediaManager.cacheTask = asyncio.get_running_loop().create_task(self.bot.mediaManager.cleanCacheTask())
+
+                if targetGuild:
+                    try:
+                        await self.bot.tree.sync(guild=discord.Object(id=config.targetGuildId))
+                        print(getLocaleString("syncSlash"))
+                        print()
+                        print()
+                    except Exception as syncError:
+                        logger.error(f"Slash sync error: {str(syncError)}")
+
+                    self.bot.logDispatcher.startWorkers(asyncio.get_running_loop())
+                    self.startupScanTask = asyncio.create_task(self.bot.startupScanner.executeScan(targetGuild))
+
+                self.isInitialized = True
 
         @self.bot.event
         async def on_message(message):
@@ -173,7 +184,7 @@ class BotEvents:
                 try:
                     await asyncio.sleep(0.5)
                     async for entry in guild.audit_logs(action=discord.AuditLogAction.message_bulk_delete, limit=3):
-                        if entry.extra.channel.id == payload.channel_id and (datetime.utcnow() - entry.created_at).total_seconds() < 12:
+                        if entry.extra.channel.id == payload.channel_id and (datetime.now(timezone.utc) - entry.created_at).total_seconds() < 12:
                             reason = getLocaleString("purgeReason", name=entry.user.name, id=entry.user.id)
                             break
                 except Exception as auditEx:
