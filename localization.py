@@ -140,8 +140,9 @@ stringsMap = {
         "heartbeatAgeSuffix": "{value:.1f} giây trước",
         "reportScheduleHourlyValue": "hàng giờ",
         "reportScheduleDailyValue": "hàng ngày",
-        "consoleReportHeader": "HỆ THỐNG: {type}",
-        "targetLogChannelIdField": "ID Kênh nhận Log",
+        "replayDescription": "Gửi lại các tin nhắn log trong Dead Letter Queue",
+        "replaySuccess": "Đã gửi lại thành công {count} dead letters.",
+        "replayEmpty": "Không có dead letters nào cần gửi lại.",
     },
     "en": {
         "text": "Text",
@@ -282,8 +283,10 @@ stringsMap = {
         "heartbeatAgeSuffix": "{value:.1f}s ago",
         "reportScheduleHourlyValue": "hourly",
         "reportScheduleDailyValue": "daily",
-        "consoleReportHeader": "SYSTEM: {type}",
         "targetLogChannelIdField": "Log Channel ID",
+        "replayDescription": "Replay dead-letter log payloads from SQLite queue",
+        "replaySuccess": "Successfully replayed {count} dead letters.",
+        "replayEmpty": "No dead letters pending replay.",
     }
 }
 

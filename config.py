@@ -1,6 +1,8 @@
 import os
 
 botToken = os.environ.get("MACB_TOKEN", "YOUR_DISCORD_BOT_TOKEN")
+if not botToken or botToken == "YOUR_DISCORD_BOT_TOKEN":
+    raise ValueError("Missing or invalid botToken. Set MACB_TOKEN environment variable.")
 
 # Target Discord Guild (Server) ID to be monitored
 # ID của máy chủ Discord cần giám sát nhật ký

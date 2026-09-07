@@ -52,12 +52,6 @@
 ## 4. Quy định Thông báo Webhook
 
 - Mỗi khi hoàn thành xong bất kỳ tác vụ hoặc công việc nào, phải chủ động gọi script `c:\Users\MeowIce\Documents\MeowBots\Webhooks\Webhook_Gemini.py` để gửi thông báo Discord webhook cho người dùng.
-- Định dạng tin nhắn gửi:
-  ```
-  <@666824403216105483> Workspace [tên ws]
-  [output tóm tắt công việc đã xong]
-  ```
-- Lệnh mẫu thực thi qua Command Prompt (`cmd.exe`):
-  `cmd.exe /c "set WORKSPACE_NAME=MACB&& C:\Python314\python.exe c:\Users\MeowIce\Documents\MeowBots\Webhooks\Webhook_Gemini.py \"[nội dung output]\""`
+- **LƯU Ý**: Script `Webhook_Gemini.py` đã tự động chèn `<@666824403216105483> Workspace [tên ws]` ở đầu tin nhắn. Khi truyền tham số nội dung vào script, **chỉ truyền phần [nội dung output tóm tắt công việc đã xong]**, KHÔNG truyền lặp lại tag user hay `Workspace ...`.
 - Lệnh mẫu thực thi qua PowerShell (`powershell.exe`):
-  `$env:WORKSPACE_NAME="MACB"; C:\Python314\python.exe c:\Users\MeowIce\Documents\MeowBots\Webhooks\Webhook_Gemini.py "[nội dung output]"`
+  `$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $env:WORKSPACE_NAME="MACB"; C:\Python314\python.exe c:\Users\MeowIce\Documents\MeowBots\Webhooks\Webhook_Gemini.py "[nội dung output]"`

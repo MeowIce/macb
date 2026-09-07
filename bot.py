@@ -64,6 +64,15 @@ class MetricsTracker:
     def incrementRetry(self):
         self.retryCount += 1
 
+    def incrementRetryEnqueued(self):
+        pass
+
+    def incrementDeadLettered(self):
+        pass
+
+    def incrementDeadLetterPersistFailed(self):
+        pass
+
     def incrementCacheHit(self):
         self.cacheHits += 1
 
@@ -106,6 +115,13 @@ class HealthWatchdog:
     async def resurrectTask(self, taskName):
         loop = asyncio.get_running_loop()
         if taskName == "DatabaseWorker":
+            isBatchActive = getattr(self.bot.databaseManager, "isBatchActive", False)
+            lastProgress = getattr(self.bot.databaseManager, "lastBatchProgressAt", 0.0)
+            now = time.perf_counter()
+            if isBatchActive and (now - lastProgress) < 45:
+                self.feedHeartbeat("DatabaseWorker")
+                logger.warning("DatabaseWorker has active progress within threshold, deferring watchdog restart")
+                return
             oldTask = self.bot.databaseManager.workerTask
             if oldTask and not oldTask.done():
                 oldTask.cancel()
@@ -113,6 +129,7 @@ class HealthWatchdog:
                     await oldTask
                 except asyncio.CancelledError:
                     pass
+            self.bot.databaseManager.isBatchActive = False
             self.bot.databaseManager.workerTask = loop.create_task(self.bot.databaseManager.dbWorker())
             self.feedHeartbeat("DatabaseWorker")
         elif taskName == "LogDispatcherWorker":
