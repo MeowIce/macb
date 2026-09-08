@@ -5,12 +5,49 @@ import asyncio
 import os
 import psutil
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 import config
 from localization import getLocaleString
 import collections
 
 logger = logging.getLogger("MacbLogger")
+
+def cleanAttachmentUrl(urlStr):
+    if not urlStr:
+        return ""
+    return urlStr.split("?")[0]
+
+def extractMessageFields(message):
+    attachmentsList = [att.url for att in message.attachments]
+    contentTypesList = [att.content_type for att in message.attachments]
+    stickersList = [st.url for st in message.stickers] if hasattr(message, "stickers") else []
+    embedsData = [emb.to_dict() for emb in message.embeds]
+    replyRef = {}
+    if message.reference and message.reference.message_id:
+        replyRef = {"messageId": message.reference.message_id, "channelId": message.reference.channel_id}
+    avatarUrl = message.author.display_avatar.url if message.author.display_avatar else ""
+    authorDisplayName = getattr(message.author, "display_name", "")
+    authorGlobalName = getattr(message.author, "global_name", "")
+    parentName = getattr(message.channel, "parent", None).name if hasattr(message.channel, "parent") and message.channel.parent else ""
+    return (
+        message.id,
+        message.author.id,
+        message.author.name,
+        authorDisplayName,
+        authorGlobalName,
+        avatarUrl,
+        message.channel.id,
+        message.channel.name,
+        parentName,
+        message.content,
+        json.dumps(attachmentsList),
+        json.dumps(stickersList),
+        json.dumps(embedsData),
+        json.dumps(replyRef),
+        message.type.value if hasattr(message.type, "value") else 0,
+        json.dumps(contentTypesList),
+        time.time()
+    )
 
 class BotEvents:
     def __init__(self, bot, metricsTracker=None):
@@ -19,6 +56,10 @@ class BotEvents:
         self.bulkDeletedIds = set()
         self.bulkDeletedQueue = collections.deque(maxlen=20000)
         self.bulkLock = asyncio.Lock()
+        self.activeLiveEventMessageIds = collections.deque(maxlen=5000)
+        self.isInitialized = False
+        self.initLock = asyncio.Lock()
+        self.startupScanTask = None
 
     def setupEvents(self):
         @self.bot.event
@@ -56,12 +97,20 @@ class BotEvents:
             print(getLocaleString("totalMembers", count=totalMembers))
             print()
             
-            if dbSuccess:
+            async with self.initLock:
+                if self.isInitialized:
+                    return
+
+                if not dbSuccess:
+                    return
+
+                if not targetGuild:
+                    return
+
                 self.bot.databaseManager.startWorker(asyncio.get_running_loop())
                 self.bot.mediaManager.initialize()
-                asyncio.get_running_loop().create_task(self.bot.mediaManager.cleanCacheTask())
-            
-            if targetGuild:
+                self.bot.mediaManager.cacheTask = asyncio.get_running_loop().create_task(self.bot.mediaManager.cleanCacheTask())
+
                 try:
                     await self.bot.tree.sync(guild=discord.Object(id=config.targetGuildId))
                     print(getLocaleString("syncSlash"))
@@ -69,9 +118,11 @@ class BotEvents:
                     print()
                 except Exception as syncError:
                     logger.error(f"Slash sync error: {str(syncError)}")
-                
+
                 self.bot.logDispatcher.startWorkers(asyncio.get_running_loop())
-                asyncio.create_task(self.bot.startupScanner.executeScan(targetGuild))
+                self.startupScanTask = asyncio.create_task(self.bot.startupScanner.executeScan(targetGuild))
+
+                self.isInitialized = True
 
         @self.bot.event
         async def on_message(message):
@@ -79,38 +130,14 @@ class BotEvents:
                 return
             if message.author.bot:
                 return
-            attachmentsList = [att.url for att in message.attachments]
-            contentTypesList = [att.content_type for att in message.attachments]
-            stickersList = [st.url for st in message.stickers] if hasattr(message, "stickers") else []
-            embedsData = [emb.to_dict() for emb in message.embeds]
-            replyRef = {}
-            if message.reference and message.reference.message_id:
-                replyRef = {"messageId": message.reference.message_id, "channelId": message.reference.channel_id}
-            avatarUrl = message.author.display_avatar.url if message.author.display_avatar else ""
-            authorDisplayName = getattr(message.author, "display_name", "")
-            authorGlobalName = getattr(message.author, "global_name", "")
-            messageData = (
-                message.id,
-                message.author.id,
-                message.author.name,
-                authorDisplayName,
-                authorGlobalName,
-                avatarUrl,
-                message.channel.id,
-                message.channel.name,
-                getattr(message.channel, "parent", None).name if hasattr(message.channel, "parent") and message.channel.parent else "",
-                message.content,
-                json.dumps(attachmentsList),
-                json.dumps(stickersList),
-                json.dumps(embedsData),
-                json.dumps(replyRef),
-                message.type.value if hasattr(message.type, "value") else 0,
-                json.dumps(contentTypesList)
-            )
-            await self.bot.databaseManager.enqueueAction("save", messageData)
-            self.bot.totalCachedMessages += 1
-            self.bot.hourlyNewMessages += 1
-            self.bot.totalNewMessages += 1
+            messageData = extractMessageFields(message)
+            assert len(messageData) == 17
+            enqueued = await self.bot.databaseManager.enqueueAction("save", messageData)
+            if enqueued:
+                self.activeLiveEventMessageIds.append(message.id)
+                self.bot.totalCachedMessages += 1
+                self.bot.hourlyNewMessages += 1
+                self.bot.totalNewMessages += 1
 
         @self.bot.event
         async def on_raw_message_delete(payload):
@@ -123,9 +150,6 @@ class BotEvents:
             dbData = await asyncio.to_thread(self.bot.databaseManager.getMessage, payload.message_id)
             if not dbData:
                 return
-            self.bot.totalCachedMessages -= 1
-            self.bot.hourlyDeletedMessages += 1
-            self.bot.totalDeletedMessages += 1
             attachmentsList = []
             try:
                 attachmentsList = json.loads(dbData[10])
@@ -147,12 +171,19 @@ class BotEvents:
                 "isOffline": False,
                 "contentTypes": dbData[15]
             }
-            await self.bot.databaseManager.enqueueAction("delete", payload.message_id)
-            await self.bot.logDispatcher.enqueueLogAction({
-                "logType": "singleDelete",
-                "channelId": payload.channel_id,
-                "messageData": msgTransformed
-            })
+            enqueued = await self.bot.databaseManager.enqueueAction("delete", payload.message_id)
+            if enqueued:
+                self.activeLiveEventMessageIds.append(payload.message_id)
+                self.bot.totalCachedMessages -= 1
+                self.bot.hourlyDeletedMessages += 1
+                self.bot.totalDeletedMessages += 1
+                await self.bot.logDispatcher.enqueueLogAction({
+                    "logType": "singleDelete",
+                    "channelId": payload.channel_id,
+                    "messageData": msgTransformed
+                })
+            else:
+                logger.warning(f"Database enqueue failed for delete {payload.message_id}; dropping log dispatch")
 
         @self.bot.event
         async def on_raw_bulk_message_delete(payload):
@@ -173,7 +204,7 @@ class BotEvents:
                 try:
                     await asyncio.sleep(0.5)
                     async for entry in guild.audit_logs(action=discord.AuditLogAction.message_bulk_delete, limit=3):
-                        if entry.extra.channel.id == payload.channel_id and (datetime.utcnow() - entry.created_at).total_seconds() < 12:
+                        if entry.extra.channel.id == payload.channel_id and (datetime.now(timezone.utc) - entry.created_at).total_seconds() < 12:
                             reason = getLocaleString("purgeReason", name=entry.user.name, id=entry.user.id)
                             break
                 except Exception as auditEx:
@@ -181,10 +212,13 @@ class BotEvents:
             dbRecords = await asyncio.to_thread(self.bot.databaseManager.getMessagesBulk, messageIds)
             if not dbRecords:
                 return
-            await self.bot.databaseManager.enqueueAction("bulkDelete", messageIds)
-            self.bot.totalCachedMessages -= len(dbRecords)
-            self.bot.hourlyDeletedMessages += len(dbRecords)
-            self.bot.totalDeletedMessages += len(dbRecords)
+            enqueued = await self.bot.databaseManager.enqueueAction("bulkDelete", messageIds)
+            if enqueued:
+                for mId in messageIds:
+                    self.activeLiveEventMessageIds.append(mId)
+                self.bot.totalCachedMessages -= len(dbRecords)
+                self.bot.hourlyDeletedMessages += len(dbRecords)
+                self.bot.totalDeletedMessages += len(dbRecords)
             validMessages = []
             for mId in messageIds:
                 if mId in dbRecords:
@@ -209,38 +243,115 @@ class BotEvents:
                         "replyReference": replyRef,
                         "contentTypes": dbData[15]
                     })
-            if validMessages:
+            if validMessages and enqueued:
                 await self.bot.logDispatcher.enqueueLogAction({
                     "logType": "bulkDeleteEvent",
                     "channelId": payload.channel_id,
                     "messagesList": validMessages,
                     "reason": reason
                 })
+            elif not enqueued:
+                logger.warning(f"Database enqueue failed for bulk delete ({len(messageIds)} msgs); dropping log dispatch")
 
         @self.bot.event
         async def on_raw_message_edit(payload):
             if payload.guild_id != config.targetGuildId:
                 return
-            if "content" not in payload.data:
-                return
-            newContent = payload.data["content"]
+            channel = self.bot.get_channel(payload.channel_id)
+            if not channel:
+                try:
+                    channel = await self.bot.fetch_channel(payload.channel_id)
+                except Exception:
+                    channel = None
+            message = None
+            if channel and hasattr(channel, "fetch_message"):
+                try:
+                    message = await channel.fetch_message(payload.message_id)
+                except Exception:
+                    message = None
+
             dbData = await asyncio.to_thread(self.bot.databaseManager.getMessage, payload.message_id)
-            if not dbData or dbData[9] == newContent:
+            if not dbData:
                 return
-            self.bot.hourlyEditedMessages += 1
-            self.bot.totalEditedMessages += 1
-            await self.bot.databaseManager.enqueueAction("updateFields", (payload.message_id, {"content": newContent}))
-            await self.bot.logDispatcher.enqueueLogAction({
-                "logType": "singleEdit",
-                "messageId": payload.message_id,
-                "authorId": dbData[1],
-                "authorName": dbData[2],
-                "authorAvatar": dbData[5],
-                "channelId": dbData[6],
-                "oldContent": dbData[9],
-                "newContent": newContent,
-                "contentTypes": dbData[15]
-            })
+
+            if message is not None:
+                newFieldsTuple = extractMessageFields(message)
+                newContent = newFieldsTuple[9]
+                newAttJson = newFieldsTuple[10]
+                newStickersJson = newFieldsTuple[11]
+                newEmbedsJson = newFieldsTuple[12]
+                newReplyJson = newFieldsTuple[13]
+                newTypesJson = newFieldsTuple[15]
+
+                oldAttJson = dbData[10] or "[]"
+                oldTypesJson = dbData[15] or "[]"
+                oldReplyJson = dbData[13] or "{}"
+                oldContent = dbData[9] or ""
+
+                try:
+                    cleanOldAtts = [cleanAttachmentUrl(u) for u in json.loads(oldAttJson)]
+                except Exception:
+                    cleanOldAtts = []
+                try:
+                    cleanNewAtts = [cleanAttachmentUrl(u) for u in json.loads(newAttJson)]
+                except Exception:
+                    cleanNewAtts = []
+
+                isContentChanged = (oldContent != newContent)
+                isAttChanged = (cleanOldAtts != cleanNewAtts)
+                isTypesChanged = (oldTypesJson != newTypesJson)
+                isReplyChanged = (oldReplyJson != newReplyJson)
+
+                if not (isContentChanged or isAttChanged or isTypesChanged or isReplyChanged):
+                    return
+
+                nowTime = time.time()
+                updatePayload = {
+                    "content": newContent,
+                    "attachments": newAttJson,
+                    "stickers": newStickersJson,
+                    "embeds": newEmbedsJson,
+                    "replyReference": newReplyJson,
+                    "contentTypes": newTypesJson,
+                    "updatedAt": nowTime
+                }
+                enqueued = await self.bot.databaseManager.enqueueAction("updateFields", (payload.message_id, updatePayload))
+                if enqueued:
+                    self.activeLiveEventMessageIds.append(payload.message_id)
+                    self.bot.hourlyEditedMessages += 1
+                    self.bot.totalEditedMessages += 1
+                    await self.bot.logDispatcher.enqueueLogAction({
+                        "logType": "singleEdit",
+                        "messageId": payload.message_id,
+                        "authorId": dbData[1],
+                        "authorName": dbData[2],
+                        "authorAvatar": dbData[5],
+                        "channelId": dbData[6],
+                        "oldContent": oldContent,
+                        "newContent": newContent,
+                        "contentTypes": newTypesJson
+                    })
+            elif "content" in payload.data:
+                newContent = payload.data["content"]
+                if dbData[9] == newContent:
+                    return
+                nowTime = time.time()
+                enqueued = await self.bot.databaseManager.enqueueAction("updateFields", (payload.message_id, {"content": newContent, "updatedAt": nowTime}))
+                if enqueued:
+                    self.activeLiveEventMessageIds.append(payload.message_id)
+                    self.bot.hourlyEditedMessages += 1
+                    self.bot.totalEditedMessages += 1
+                    await self.bot.logDispatcher.enqueueLogAction({
+                        "logType": "singleEdit",
+                        "messageId": payload.message_id,
+                        "authorId": dbData[1],
+                        "authorName": dbData[2],
+                        "authorAvatar": dbData[5],
+                        "channelId": dbData[6],
+                        "oldContent": dbData[9] or "",
+                        "newContent": newContent,
+                        "contentTypes": dbData[15]
+                    })
 
         @self.bot.tree.command(name="getstats", description=getLocaleString("statsDescription"), guild=discord.Object(id=config.targetGuildId))
         async def getStatsCommand(interaction: discord.Interaction):
@@ -431,6 +542,22 @@ class BotEvents:
                 await interaction.followup.send(getLocaleString("reportSent", channelId=config.logChannelId), ephemeral=True)
             else:
                 await interaction.followup.send(getLocaleString("reportFailed"), ephemeral=True)
+
+        @self.bot.tree.command(name="replaydeadletters", description=getLocaleString("replayDescription"), guild=discord.Object(id=config.targetGuildId))
+        async def replayDeadLettersCommand(interaction: discord.Interaction):
+            if not interaction.user.guild_permissions.manage_guild:
+                await interaction.response.send_message(getLocaleString("reportPermissionDenied"), ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True)
+            try:
+                count = await self.bot.logDispatcher.replayDeadLetters(limit=25)
+                if count > 0:
+                    await interaction.followup.send(getLocaleString("replaySuccess", count=count), ephemeral=True)
+                else:
+                    await interaction.followup.send(getLocaleString("replayEmpty"), ephemeral=True)
+            except Exception as replayError:
+                logger.error(f"Replay command failed: {str(replayError)}", exc_info=True)
+                await interaction.followup.send(f"Replay error: {str(replayError)}", ephemeral=True)
 
     async def clearBulkCacheDelayed(self, messageIds):
         await asyncio.sleep(12)

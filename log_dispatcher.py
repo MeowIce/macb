@@ -4,6 +4,7 @@ import io
 import logging
 import time
 import json
+import collections
 import aiohttp
 from datetime import datetime
 import config
@@ -50,44 +51,163 @@ class LogDispatcher:
         self.downloadSemaphore = asyncio.Semaphore(config.maxParallelDownloads)
         self.metricsTracker = metricsTracker
         self.workerTasks = []
+        self.replayTask = None
 
     def startLoops(self, loop):
-        self.workerTasks = []
-        for _ in range(config.logConsumerWorkersCount):
-            self.workerTasks.append(loop.create_task(self.logConsumerWorker()))
+        aliveWorkers = [task for task in self.workerTasks if not task.done()]
+        if not aliveWorkers:
+            self.workerTasks = [loop.create_task(self.logConsumerWorker()) for _ in range(config.logConsumerWorkersCount)]
+        if self.replayTask is None or self.replayTask.done():
+            self.replayTask = loop.create_task(self.replayWorker())
 
     def startWorkers(self, loop):
-        """Alias for startLoops for backward compatibility."""
         self.startLoops(loop)
+
+    async def persistLogDeadLetter(self, actionPayload, errorMsg):
+        persisted = False
+        try:
+            dbMgr = getattr(self.bot, "databaseManager", None)
+            if dbMgr and dbMgr.writeConn:
+                async with dbMgr.writeLock:
+                    cursor = dbMgr.writeConn.cursor()
+                    logType = actionPayload.get("logType", "unknown")
+                    payloadStr = json.dumps(actionPayload)
+                    cursor.execute(
+                        "INSERT INTO logDeadLetters (logType, payload, attempts, lastError, createdAt) VALUES (?, ?, ?, ?, ?)",
+                        (logType, payloadStr, actionPayload.get("attempts", 1), str(errorMsg), time.time())
+                    )
+                    dbMgr.writeConn.commit()
+                    cursor.close()
+                persisted = True
+                if self.metricsTracker:
+                    self.metricsTracker.incrementDeadLettered()
+                logger.critical(f"Persisted dead-letter log payload to DB: {logType}")
+        except Exception as ex:
+            logger.critical(f"Failed to persist log dead-letter to DB: {str(ex)}")
+
+        if not persisted:
+            try:
+                spoolEntry = {
+                    "logType": actionPayload.get("logType", "unknown"),
+                    "payload": actionPayload,
+                    "attempts": actionPayload.get("attempts", 1),
+                    "lastError": str(errorMsg),
+                    "createdAt": time.time()
+                }
+                with open("log_dead_letters_spool.jsonl", "a", encoding="utf-8") as f:
+                    f.write(json.dumps(spoolEntry, ensure_ascii=False) + "\n")
+                if self.metricsTracker:
+                    self.metricsTracker.incrementDeadLettered()
+                logger.critical(f"Spooled dead-letter log payload to disk: {actionPayload.get('logType', 'unknown')}")
+            except Exception as spoolEx:
+                if self.metricsTracker:
+                    self.metricsTracker.incrementDeadLetterPersistFailed()
+                logger.critical(f"Disk spool fallback failed for log dead letter: {str(spoolEx)}")
+
+    async def replayDeadLetters(self, limit=20):
+        replayedCount = 0
+        dbMgr = getattr(self.bot, "databaseManager", None)
+        if not dbMgr or not dbMgr.writeConn or not dbMgr.isReady:
+            return 0
+        rows = []
+        nowTime = time.time()
+        leaseExpiry = nowTime - 60.0
+        try:
+            async with dbMgr.writeLock:
+                cursor = dbMgr.writeConn.cursor()
+                cursor.execute(
+                    "SELECT id, logType, payload, attempts FROM logDeadLetters WHERE claimedAt < ? ORDER BY id ASC LIMIT ?",
+                    (leaseExpiry, limit)
+                )
+                rows = cursor.fetchall()
+                if rows:
+                    claimedIds = [row[0] for row in rows]
+                    placeholders = ", ".join(["?"] * len(claimedIds))
+                    cursor.execute(f"UPDATE logDeadLetters SET claimedAt = ? WHERE id IN ({placeholders})", [nowTime] + claimedIds)
+                    dbMgr.writeConn.commit()
+                cursor.close()
+        except Exception as readEx:
+            logger.error(f"Error reading log dead letters for replay: {str(readEx)}")
+            return 0
+
+        for rowId, logType, payloadStr, attempts in rows:
+            try:
+                payload = json.loads(payloadStr)
+                await self.executeLogPipeline(payload)
+                async with dbMgr.writeLock:
+                    cursor = dbMgr.writeConn.cursor()
+                    cursor.execute("DELETE FROM logDeadLetters WHERE id = ?", (rowId,))
+                    dbMgr.writeConn.commit()
+                    cursor.close()
+                replayedCount += 1
+                await asyncio.sleep(1.0)
+            except Exception as replayErr:
+                logger.warning(f"Replaying dead letter {rowId} failed: {str(replayErr)}")
+                try:
+                    async with dbMgr.writeLock:
+                        cursor = dbMgr.writeConn.cursor()
+                        cursor.execute("UPDATE logDeadLetters SET attempts = attempts + 1, lastError = ?, claimedAt = 0.0 WHERE id = ?", (str(replayErr), rowId))
+                        dbMgr.writeConn.commit()
+                        cursor.close()
+                except Exception:
+                    pass
+                await asyncio.sleep(2.0)
+        return replayedCount
+
+    async def replayWorker(self):
+        while True:
+            try:
+                await asyncio.sleep(300)
+                if self.logQueue.qsize() < int(config.maxLogQueueSize * 0.20):
+                    await self.replayDeadLetters(limit=10)
+            except asyncio.CancelledError:
+                break
+            except Exception as workerEx:
+                logger.error(f"Error in replayWorker loop: {str(workerEx)}")
+                await asyncio.sleep(30)
 
     async def enqueueLogAction(self, actionPayload):
         try:
             await asyncio.wait_for(self.logQueue.put(actionPayload), timeout=5.0)
             if self.metricsTracker:
                 self.metricsTracker.updateLogQueue(self.logQueue.qsize())
+            return True
         except asyncio.TimeoutError:
             logger.warning("Log queue is full; operation timed out.")
             if self.metricsTracker:
                 self.metricsTracker.incrementQueueDropped()
+            await self.persistLogDeadLetter(actionPayload, "log queue full timeout")
+            return False
         except Exception as ex:
             logger.error(f"Error enqueuing log action: {str(ex)}")
+            await self.persistLogDeadLetter(actionPayload, str(ex))
+            return False
 
     async def logConsumerWorker(self):
         while True:
+            actionPayload = None
             try:
-                if self.bot and hasattr(self.bot, "watchdog"):
+                if getattr(self.bot, "watchdog", None):
                     self.bot.watchdog.feedHeartbeat("LogDispatcherWorker")
                 try:
                     actionPayload = await asyncio.wait_for(self.logQueue.get(), timeout=1.0)
                 except asyncio.TimeoutError:
                     continue
                 startTime = time.perf_counter()
-                await self.executeLogPipeline(actionPayload)
-                if self.metricsTracker:
-                    self.metricsTracker.recordSendLatency(time.perf_counter() - startTime)
-                    self.metricsTracker.updateLogQueue(self.logQueue.qsize())
-                self.logQueue.task_done()
+                try:
+                    await self.executeLogPipeline(actionPayload)
+                    if self.metricsTracker:
+                        self.metricsTracker.recordSendLatency(time.perf_counter() - startTime)
+                        self.metricsTracker.updateLogQueue(self.logQueue.qsize())
+                except Exception as pipelineError:
+                    logger.error(f"Error in log pipeline: {str(pipelineError)}", exc_info=True)
+                    if actionPayload:
+                        await self.persistLogDeadLetter(actionPayload, pipelineError)
+                finally:
+                    self.logQueue.task_done()
             except asyncio.CancelledError:
+                if actionPayload is not None:
+                    self.logQueue.task_done()
                 break
             except Exception as workerError:
                 logger.error(f"Error in log consumer worker: {str(workerError)}", exc_info=True)
@@ -236,14 +356,15 @@ class LogDispatcher:
             logReport.append(getLocaleString("bulkMsgContent", content=msg['content'] or getLocaleString("empty")))
             logReport.append("-" * 40)
         reportBytes = "\n".join(logReport).encode("utf-8")
-        reportFile = discord.File(io.BytesIO(reportBytes), filename=f"bulk_delete_{channelId}.txt")
         embed = discord.Embed(
             title=getLocaleString("bulkTitle"),
             color=discord.Color.dark_magenta(),
             description=getLocaleString("bulkDesc", count=len(messagesList), channelId=channelId, reason=reason)
         )
         embed.set_footer(text=f"{getLocaleString('sentTime')}: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-        await self.sendLogWithRetry(embed=embed, file=reportFile)
+        sent = await self.sendLogWithRetry(embed=embed, filePayloads=[(f"bulk_delete_{channelId}.txt", reportBytes)])
+        if not sent:
+            raise RuntimeError(f"Failed to deliver bulk delete log for channel {channelId}")
 
     async def processSingleEditPipeline(self, payload):
         createdUtc = discord.utils.snowflake_time(payload["messageId"])
@@ -270,12 +391,15 @@ class LogDispatcher:
         else:
             embed.add_field(name=getLocaleString("afterEdit"), value=f"```\n{newContentText or getLocaleString('empty')}\n```", inline=False)
         embed.set_footer(text=f"{getLocaleString('sentTime')}: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-        fileObjects = [discord.File(io.BytesIO(b), filename=n) for n, b in txtFiles]
-        await self.sendLogWithRetry(embed=embed, files=fileObjects if fileObjects else None)
+        sent = await self.sendLogWithRetry(embed=embed, filePayloads=txtFiles if txtFiles else None)
+        if not sent:
+            raise RuntimeError(f"Failed to deliver edit log for message {payload.get('messageId')}")
 
     async def dispatchPayloadChunked(self, embed, validFiles):
         if not validFiles:
-            await self.sendLogWithRetry(embed=embed)
+            sent = await self.sendLogWithRetry(embed=embed)
+            if not sent:
+                raise RuntimeError("Failed to deliver log embed")
             return
         currentChunk = []
         currentChunkSize = 0
@@ -292,25 +416,28 @@ class LogDispatcher:
                 isFirstMessage = False
                 currentChunk = []
                 currentChunkSize = 0
-            currentChunk.append(discord.File(io.BytesIO(fBytes), filename=filename))
+            currentChunk.append((filename, fBytes))
             currentChunkSize += fSize
         if currentChunk:
             await self.sendChunk(embed if isFirstMessage else None, currentChunk)
 
-    async def sendChunk(self, embed, fileObjects):
-        await self.sendLogWithRetry(embed=embed, files=fileObjects)
+    async def sendChunk(self, embed, filePayloads):
+        sent = await self.sendLogWithRetry(embed=embed, filePayloads=filePayloads)
+        if not sent:
+            raise RuntimeError("Failed to deliver log chunk")
 
-    async def sendLogWithRetry(self, embed=None, file=None, files=None):
+    async def sendLogWithRetry(self, embed=None, filePayloads=None):
         logChannel = self.bot.get_channel(config.logChannelId)
         if not logChannel:
             return False
         maxRetries = 3
         for attempt in range(maxRetries):
             try:
+                files = None
+                if filePayloads:
+                    files = [discord.File(io.BytesIO(b), filename=n) for n, b in filePayloads]
                 if files:
                     await asyncio.wait_for(logChannel.send(embed=embed, files=files), timeout=15)
-                elif file:
-                    await asyncio.wait_for(logChannel.send(embed=embed, file=file), timeout=15)
                 else:
                     await asyncio.wait_for(logChannel.send(embed=embed), timeout=15)
                 return True
@@ -342,11 +469,20 @@ class LogDispatcher:
 
     async def flushAndClose(self):
         logger.info("Joining log queue...")
-        await self.logQueue.join()
+        try:
+            await asyncio.wait_for(self.logQueue.join(), timeout=30.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"Log queue drain timed out; {self.logQueue.qsize()} items unprocessed")
         for task in self.workerTasks:
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
-        logger.info("Log dispatcher workers stopped cleanly.")
+        if self.replayTask:
+            self.replayTask.cancel()
+            try:
+                await self.replayTask
+            except asyncio.CancelledError:
+                pass
+        logger.info("Log dispatcher workers stopped cleanly.")

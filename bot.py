@@ -27,8 +27,6 @@ class MetricsTracker:
         self.downloadTimeEwma = 0.0
         self.queueDroppedCount = 0
         self.retryCount = 0
-        self.cacheHits = 0
-        self.cacheMisses = 0
         self.throughputCount = 0
         self.alpha = 0.2
         self.lastThroughputCheck = time.perf_counter()
@@ -64,11 +62,14 @@ class MetricsTracker:
     def incrementRetry(self):
         self.retryCount += 1
 
-    def incrementCacheHit(self):
-        self.cacheHits += 1
+    def incrementRetryEnqueued(self):
+        pass
 
-    def incrementCacheSubMiss(self):
-        self.cacheMisses += 1
+    def incrementDeadLettered(self):
+        pass
+
+    def incrementDeadLetterPersistFailed(self):
+        pass
 
     def recordThroughput(self, count):
         self.throughputCount += count
@@ -106,6 +107,13 @@ class HealthWatchdog:
     async def resurrectTask(self, taskName):
         loop = asyncio.get_running_loop()
         if taskName == "DatabaseWorker":
+            isBatchActive = getattr(self.bot.databaseManager, "isBatchActive", False)
+            lastProgress = getattr(self.bot.databaseManager, "lastBatchProgressAt", 0.0)
+            now = time.perf_counter()
+            if isBatchActive and (now - lastProgress) < 45:
+                self.feedHeartbeat("DatabaseWorker")
+                logger.warning("DatabaseWorker has active progress within threshold, deferring watchdog restart")
+                return
             oldTask = self.bot.databaseManager.workerTask
             if oldTask and not oldTask.done():
                 oldTask.cancel()
@@ -113,6 +121,7 @@ class HealthWatchdog:
                     await oldTask
                 except asyncio.CancelledError:
                     pass
+            self.bot.databaseManager.isBatchActive = False
             self.bot.databaseManager.workerTask = loop.create_task(self.bot.databaseManager.dbWorker())
             self.feedHeartbeat("DatabaseWorker")
         elif taskName == "LogDispatcherWorker":
@@ -157,9 +166,22 @@ class DummyMediaManager:
     async def downloadMediaBytes(self, url):
         if not self.session:
             return None
-        async with self.session.get(url, timeout=15) as response:
+        maxBytes = config.maxPayloadBytesLimit
+        async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
             response.raise_for_status()
-            return await response.read()
+            contentLength = response.headers.get("Content-Length")
+            if contentLength and int(contentLength) > maxBytes:
+                logger.warning(f"Skipping download; Content-Length {contentLength} exceeds limit: {url}")
+                return None
+            chunks = []
+            bytesRead = 0
+            async for chunk in response.content.iter_chunked(65536):
+                bytesRead += len(chunk)
+                if bytesRead > maxBytes:
+                    logger.warning(f"Download aborted at byte limit {maxBytes}: {url}")
+                    return None
+                chunks.append(chunk)
+            return b"".join(chunks)
 
     async def close(self):
         if self.cacheTask and not self.cacheTask.done():
@@ -210,7 +232,6 @@ class MACB(commands.Bot):
         self.botEvents.setupEvents()
         self.watchdog.watchdogTask = self.loop.create_task(self.watchdog.startWatchdogLoop())
         self.metricsTask = self.loop.create_task(self.metricsReportingTask())
-        self.mediaManager.cacheTask = self.loop.create_task(self.mediaManager.cleanCacheTask())
         self.periodicTask = self.loop.create_task(self.periodicReportTask())
 
     async def metricsReportingTask(self):
@@ -225,7 +246,7 @@ class MACB(commands.Bot):
                     f"[METRICS-EWMA] DB Queue: {metricsTracker.dbQueueLength} | Log Queue: {metricsTracker.logQueueLength} | "
                     f"DB Latency: {dbAvg:.2f}ms | Send Latency: {sendAvg:.2f}ms | Download Time: {dlAvg:.2f}ms | "
                     f"Throughput: {metricsTracker.currentThroughputRps:.2f} rps | Retries: {metricsTracker.retryCount} | "
-                    f"Hits: {metricsTracker.cacheHits} | Misses: {metricsTracker.cacheMisses} | Dropped: {metricsTracker.queueDroppedCount}"
+                    f"Dropped: {metricsTracker.queueDroppedCount}"
                 )
             except asyncio.CancelledError:
                 break
@@ -276,8 +297,10 @@ class MACB(commands.Bot):
         newMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyNewMessages)
         editedMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyEditedMessages)
         deletedMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyDeletedMessages)
+        dispatchModeStr = getLocaleString("reportTypeManual") if isManual else getLocaleString("reportTypeScheduled")
         descriptionContent = (
             f"**{getLocaleString('publishTime')}**\n{currentTimeStr}\n\n"
+            f"**{getLocaleString('reportTypeField')}**\n{dispatchModeStr}\n\n"
             f"**{getLocaleString('totalCurrentMessages')}**\n{totalMsgsStr}\n\n"
             f"**{getLocaleString('newMessagesGenerated')}**\n{newMsgsStr}\n\n"
             f"**{getLocaleString('editedMessagesField')}**\n{editedMsgsStr}\n\n"
@@ -297,6 +320,7 @@ class MACB(commands.Bot):
             f" {consoleDivider}\n"
             f" {getLocaleString('targetLogChannelIdField')}: {config.logChannelId}\n"
             f" {getLocaleString('publishTime')}: {currentTimeStr}\n"
+            f" {getLocaleString('reportTypeField')}: {dispatchModeStr}\n"
             f" -----------------------------------------------------\n"
             f" {getLocaleString('totalCurrentMessages')}: {totalMsgsStr}\n"
             f" {getLocaleString('newMessagesGenerated')}: {newMsgsStr}\n"
@@ -322,6 +346,17 @@ async def main():
         pass
     finally:
         print(getLocaleString("shuttingDown"))
+        scanTask = getattr(bot.botEvents, "startupScanTask", None)
+        if scanTask and not scanTask.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(scanTask), timeout=15.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                if not scanTask.done():
+                    scanTask.cancel()
+                    try:
+                        await scanTask
+                    except asyncio.CancelledError:
+                        pass
         if bot.metricsTask and not bot.metricsTask.done():
             bot.metricsTask.cancel()
             try:

@@ -15,10 +15,6 @@ def cleanAttachmentUrl(urlStr):
         return ""
     return urlStr.split("?")[0]
 
-def normalizeTimestamp(dtObj):
-    if not dtObj:
-        return None
-    return int(dtObj.timestamp())
 
 def checkMessageEditStatus(dbContent, discordMsg):
     oldContent = dbContent if dbContent is not None else ""
@@ -31,6 +27,8 @@ class StartupScanner:
         self.totalChannels = 0
         self.channelsCompleted = 0
         self.lastLogTime = 0
+        self.scanAcceptedLogs = 0
+        self.scanFailedLogs = 0
 
     async def executeScan(self, guild):
         startTime = time.perf_counter()
@@ -99,29 +97,32 @@ class StartupScanner:
         try:
             if isinstance(channel, discord.Thread) and channel.archived:
                 return
-                
+
             fetchedMessagesList = []
-            
+
+            fetchComplete = False
             if isFirstScan:
-                async for msg in channel.history(limit=config.scanSize, oldest_first=False):
+                async for msg in channel.history(limit=None, oldest_first=False):
                     if msg.author.bot:
                         continue
                     localMsgCount += 1
                     fetchedMessagesList.append(msg)
+                fetchComplete = True
             else:
                 async for msg in channel.history(limit=100, oldest_first=False):
                     if msg.author.bot:
                         continue
                     localMsgCount += 1
                     fetchedMessagesList.append(msg)
-                    
+
                 if maxLocalId:
-                    async for extraMsg in channel.history(after=discord.Object(id=maxLocalId), limit=200, oldest_first=True):
+                    async for extraMsg in channel.history(after=discord.Object(id=maxLocalId), limit=None, oldest_first=True):
                         if extraMsg.author.bot:
                             continue
                         localMsgCount += 1
                         fetchedMessagesList.append(extraMsg)
-                        
+                fetchComplete = True
+
             if not fetchedMessagesList:
                 return
                 
@@ -160,8 +161,9 @@ class StartupScanner:
                         
                         try:
                             rawDbTypesList = json.loads(dbContentTypesRaw) if dbContentTypesRaw else []
+                            cleanDbTypesList = rawDbTypesList
                         except Exception:
-                            rawDbTypesList = []
+                            cleanDbTypesList = []
                             
                         currentTypesList = [att.content_type for att in msg.attachments]
                         
@@ -176,11 +178,11 @@ class StartupScanner:
                         
                         isContentModified = checkMessageEditStatus(dbContent, msg)
                         isAttachmentsEqual = (cleanDbAtts == cleanCurrentAtts)
-                        isContentTypesEqual = (rawDbTypesList == currentTypesList)
+                        isContentTypesEqual = (cleanDbTypesList == currentTypesList)
                         isReplyEqual = (dbReplyId == currentReplyId)
                         
                         if isContentModified or not (isAttachmentsEqual and isContentTypesEqual and isReplyEqual):
-                            dbUpdatesList.append((msg.content, currentAttachmentsRaw, currentContentTypesRaw, msgId))
+                            dbUpdatesList.append((msg.content, currentAttachmentsRaw, currentContentTypesRaw, msg.created_at.timestamp(), msgId, msg.created_at.timestamp()))
                             avatarUrl = msg.author.display_avatar.url if msg.author.display_avatar else ""
                             offlineEditsCollected.append({
                                 "messageId": msgId,
@@ -206,8 +208,10 @@ class StartupScanner:
                         msgId, msg.author.id, msg.author.name, authorDisplayName, authorGlobalName, avatarUrl,
                         channel.id, channel.name, getattr(channel, "parent", None).name if getattr(channel, "parent", None) else "",
                         msg.content, json.dumps(attachmentsList), json.dumps(stickersList), json.dumps(embedsData),
-                        json.dumps(replyRef), msg.type.value if hasattr(msg.type, "value") else 0, json.dumps(contentTypesList)
+                        json.dumps(replyRef), msg.type.value if hasattr(msg.type, "value") else 0, json.dumps(contentTypesList),
+                        msg.created_at.timestamp()
                     )
+                    assert len(msgTuple) == 17
                     channelMessagesList.append(msgTuple)
                     
                     if self.bot.globalOldestDate is None or msg.created_at < self.bot.globalOldestDate:
@@ -219,9 +223,10 @@ class StartupScanner:
                 await self.bot.databaseManager.enqueueAction("bulkUpdateOffline", dbUpdatesList)
                 self.bot.hourlyEditedMessages += len(dbUpdatesList)
                 self.bot.totalEditedMessages += len(dbUpdatesList)
-            if maxLocalId and localCacheMap:
+            if fetchComplete and maxLocalId and localCacheMap:
+                activeLiveIds = set(getattr(self.bot.botEvents, "activeLiveEventMessageIds", []))
                 for cId in localCacheMap.keys():
-                    if cId not in fetchedIdsSet:
+                    if cId not in fetchedIdsSet and cId not in activeLiveIds:
                         dbRow = localCacheMap[cId]
                         attachmentsList = []
                         try:
@@ -252,7 +257,14 @@ class StartupScanner:
                 
             if offlineEditsCollected:
                 for edit in offlineEditsCollected:
-                    await self.bot.logDispatcher.enqueueLogAction({
+                    waitCount = 0
+                    while self.bot.logDispatcher.logQueue.qsize() >= int(config.maxLogQueueSize * 0.50):
+                        await asyncio.sleep(0.25)
+                        waitCount += 1
+                        if waitCount > 120:
+                            logger.warning("Log queue saturated during offline edits; spooling via DLQ fallback")
+                            break
+                    editPayload = {
                         "logType": "offlineEdit",
                         "channelId": channel.id,
                         "messageId": edit["messageId"],
@@ -262,16 +274,33 @@ class StartupScanner:
                         "oldContent": edit["oldContent"],
                         "newContent": edit["newContent"],
                         "contentTypes": edit.get("contentTypes", "[]")
-                    })
+                    }
+                    accepted = await self.bot.logDispatcher.enqueueLogAction(editPayload)
+                    if accepted:
+                        self.scanAcceptedLogs += 1
+                    else:
+                        self.scanFailedLogs += 1
             if offlineDeletesCollected:
                 for item in offlineDeletesCollected:
-                    await self.bot.logDispatcher.enqueueLogAction({
+                    waitCount = 0
+                    while self.bot.logDispatcher.logQueue.qsize() >= int(config.maxLogQueueSize * 0.50):
+                        await asyncio.sleep(0.25)
+                        waitCount += 1
+                        if waitCount > 120:
+                            logger.warning("Log queue saturated during offline deletes; spooling via DLQ fallback")
+                            break
+                    deletePayload = {
                         "logType": "offlineDelete",
                         "channelId": channel.id,
                         "messageData": item
-                    })
+                    }
+                    accepted = await self.bot.logDispatcher.enqueueLogAction(deletePayload)
+                    if accepted:
+                        self.scanAcceptedLogs += 1
+                    else:
+                        self.scanFailedLogs += 1
         except discord.Forbidden:
-            pass
+            logger.warning(f"Forbidden to read history for channel {channel.id}; skipping deletion reconciliation")
         except Exception as scanEx:
             logger.error(f"Error scanning channel history for {channel.id}: {str(scanEx)}")
         finally:
