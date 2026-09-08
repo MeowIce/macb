@@ -1,148 +1,192 @@
-# Production Fix Instructions
+# Codebase Cleanup & Logic-Fix Instructions
 
-Tất cả các issue đã được giải quyết triệt để và xác nhận qua regression test `[VERIFIED]`.
+Mục tiêu của file này là hướng dẫn AI implementer sửa code. Không đánh dấu issue là hoàn tất nếu chưa có test/regression check tương ứng.
 
-## 1. [VERIFIED][CRITICAL] Payload save/bulkSave không khớp schema `updatedAt`
-
-### Vị trí
-
-- `database.py:199-232`: INSERT hiện yêu cầu 17 giá trị, gồm `updatedAt`.
-- `events.py:106-123`: `messageData` hiện vẫn tạo tuple 16 giá trị.
-- `scanner.py:209-214`: `msgTuple` hiện vẫn tạo tuple 16 giá trị.
-
-### Lỗi
-
-SQL insert có thêm cột `updatedAt` và 17 placeholder, nhưng live message và startup scan không truyền giá trị thứ 17. Mỗi `save`/`bulkSave` có thể lỗi “Incorrect number of bindings supplied”, rollback, retry rồi cuối cùng vào DLQ. Kết quả là bot online nhưng không lưu được message mới hoặc message scan.
-
-### Cách sửa
-
-1. Chọn một nguồn timestamp thống nhất, tốt nhất là `message.created_at.timestamp()` cho scan và `time.time()`/event timestamp cho live update.
-2. Thêm giá trị `updatedAt` ở cuối mọi tuple `messageData` và `msgTuple`.
-3. Đảm bảo mọi action tạo bởi test/factory cũng có đúng 17 fields.
-4. Với migration cũ, xác nhận `ALTER TABLE` đã tạo cột trước khi worker chạy.
-5. Thêm assertion trước enqueue:
-
-```python
-assert len(messageData) == 17
-```
-
-6. Test một live message, một `bulkSave`, một upsert cũ/mới và database cũ đã migrate.
-
-### Ví dụ
-
-```python
-updatedAt = message.created_at.timestamp()
-messageData = (..., message.type.value, json.dumps(contentTypesList), updatedAt)
-```
-
-## 2. [VERIFIED][CRITICAL] Watchdog vẫn có thể cancel batch đang chạy
- 
- ### Vị trí
- 
- - `database.py:190-251`: `isBatchActive`, `lastBatchProgressAt`.
- - `bot.py:109-125`: `HealthWatchdog.resurrectTask()`.
- 
- ### Lỗi
- 
- Watchdog hoãn restart khi batch có progress trong 45 giây, nhưng sau 45 giây vẫn cancel task nếu batch chưa xong. Nếu batch đang mắc ở một action chậm hoặc I/O SQLite, cancellation có thể xảy ra giữa transaction. Ngoài ra `finally` acknowledge toàn bộ `rawActions` dù commit chưa thành công.
- 
- ### Cách sửa
- 
- 1. Dùng hard timeout riêng cho batch và SQLite `busy_timeout` hữu hạn.
- 2. Khi timeout, không cancel mù: chuyển worker vào trạng thái stopping, rollback, persist/requeue tất cả action chưa commit.
- 3. Chỉ `task_done()` cho item sau commit hoặc sau khi item đã được persist durable vào retry/DLQ.
- 4. Tracked queue phải biết item lấy từ `dbQueue` hay `retryQueue`; hiện `finally` luôn gọi `self.dbQueue.task_done()`.
- 5. Feed progress theo số action và cập nhật `lastBatchProgressAt` trong loop.
- 
- Test: lock SQLite lâu hơn 45 giây, cancel giữa action 1/20/99 và kiểm tra không mất action, không gọi `task_done()` nhầm queue.
- 
- ## 3. [VERIFIED][CRITICAL] Failed database batch vẫn có thể mất action và retry queue bị ack sai
- 
- ### Vị trí
- 
- - `database.py:164-181`, `database.py:252-282`.
- 
- ### Lỗi
- 
- Batch có thể được lấy từ `retryQueue` hoặc `dbQueue`, nhưng `finally` luôn gọi `self.dbQueue.task_done()` cho toàn bộ item. Item từ `retryQueue` không được acknowledge đúng queue; đồng thời re-enqueue retry vẫn có thể timeout và `_persistDeadLetter()` cũng có thể fail mà không có fallback.
- 
- ### Cách sửa
- 
- 1. Lưu metadata nguồn queue cho từng item, ví dụ `(queueName, action)`.
- 2. Gọi `task_done()` trên queue tương ứng.
- 3. Maak retry/DLQ persistence atomic và có fallback append-only file nếu SQLite đang hỏng.
- 4. Không coi action hoàn tất khi chỉ log được lỗi.
- 5. Thêm counter và alert cho `retry_enqueued`, `dead_lettered`, `dead_letter_persist_failed`.
- 
- ## 4. [VERIFIED][HIGH] Log DLQ còn có bounded RAM deque và chưa có replay worker
- 
- ### Vị trí
- 
- - `log_dispatcher.py:54`, `log_dispatcher.py:93-120`.
- 
- ### Lỗi
- 
- Payload đã được persist vào SQLite, nhưng vẫn append vào `deque(maxlen=1000)`, có thể làm mất bản copy RAM. Quan trọng hơn, code chưa có replay worker/command để đọc `logDeadLetters` và gửi lại. DLQ hiện chỉ là nơi lưu, không phải recovery flow.
- 
- ### Cách sửa
- 
- 1. Dùng SQLite `logDeadLetters` làm source of truth; deque chỉ là cache tùy chọn, không được silently evict mà không metric.
- 2. Viết `replayDeadLetters()` đọc item tới hạn, gửi lại với backoff, tăng attempts và xoá chỉ sau success.
- 3. Đảm bảo payload serialize được và có schema/version.
- 4. Thêm admin command hoặc startup task để replay có kiểm soát.
- 5. Alert khi số DLQ tăng hoặc replay thất bại liên tiếp.
- 
- ## 5. [VERIFIED][HIGH] Offline recovery backpressure chưa bảo toàn kết quả enqueue
- 
- ### Vị trí
- 
- - `scanner.py:259-281`, `log_dispatcher.py:83-101`.
- 
- ### Lỗi
- 
- Scanner chờ queue xuống dưới 60%, nhưng không kiểm tra return value của `enqueueLogAction()`. Nếu timeout hoặc persist DLQ lỗi, scanner vẫn tiếp tục và xem event là đã xử lý.
- 
- ### Cách sửa
- 
- 1. Kiểm tra `accepted = await enqueueLogAction(payload)`.
- 2. Nếu `False`, dừng channel scan hoặc persist event vào recovery spool trước khi tiếp tục.
- 3. Chờ theo watermark thấp hơn; thêm deadline để phát alert thay vì sleep vô hạn.
- 4. Sau scan báo cáo tổng số accepted, failed, persisted và replay pending.
- 
- ## 6. [VERIFIED][HIGH] Ordering barrier dựa trên deque 5000 ID chưa đủ an toàn
- 
- ### Vị trí
- 
- - `events.py:22`, các live handlers.
- - `scanner.py:227-230`.
- - `database.py:204-243`.
- 
- ### Lỗi
- 
- `activeLiveEventMessageIds` là deque giới hạn 5000 ID, không có version/sequence và ID cũ bị loại. Việc loại trừ ID chỉ bảo vệ một phần reconciliation; không đảm bảo scan result cũ không ghi đè event mới.
- 
- ### Cách sửa
- 
- 1. Dùng `updatedAt`/monotonic sequence thống nhất cho live event và scan result.
- 2. Sửa mọi upsert để chỉ update khi incoming version >= version trong DB.
- 3. Dùng checkpoint riêng theo channel/message thay vì deque toàn cục.
- 4. Serialize reconciliation và live event của cùng message, hoặc merge theo version trước khi ghi/log.
- 5. Sau khi sửa payload `updatedAt` ở issue #1, thêm test stale scan không overwrite live edit/delete.
- 
- ## 7. [VERIFIED][MEDIUM] Database connection recovery chưa transactional end-to-end
+## 1. [HIGH][VERIFIED] Startup scan task không được quản lý khi shutdown
 
 ### Vị trí
 
-- `database.py:38-61`, `database.py:252-273`.
+- `events.py`, nơi gán `self.startupScanTask = asyncio.create_task(...)`.
+- `bot.py:main()`, cleanup lifecycle.
 
-### Lỗi
+### Nguyên nhân
 
-Worker có lock/reconnect/rollback, nhưng connection recreation, retry queue và dead-letter persistence chưa có một transaction ownership/lifecycle rõ ràng. Nếu SQLite hỏng đến mức không thể ghi DLQ, action có thể mất dù code đã retry.
+Startup scan chạy background nhưng `main()` không await, cancel hoặc drain `startupScanTask`. Khi process shutdown, code đóng log dispatcher/database trong khi scanner vẫn có thể enqueue DB/log actions. Những action này có thể bị drop, gặp connection đã đóng hoặc làm queue drain không phản ánh đúng trạng thái.
 
 ### Cách sửa
 
-1. Chỉ database worker sở hữu write connection và transaction.
-2. Dùng lock riêng cho connection lifecycle; không close connection giữa transaction đang chạy.
-3. Phân loại lỗi lock/busy, disk-full, schema và permission.
-4. Với disk-full/SQLite unusable, ghi append-only spool ngoài DB và chuyển service sang degraded state.
-5. Chỉ set `isReady=True` sau health check, schema check và test write/rollback tối thiểu.
+1. Expose task qua `bot.botEvents.startupScanTask` hoặc một field chính thức trên `MACB`.
+2. Trước shutdown, stop nhận event mới hoặc đặt `isShuttingDown=True`.
+3. Await scan với deadline; nếu quá hạn thì cancel và await cancellation.
+4. Chỉ sau đó mới flush log queue, DB queue, đóng media session và đóng bot.
+5. Nếu scanner bị cancel giữa channel, ghi checkpoint để lần sau tiếp tục.
+
+Ví dụ lifecycle:
+
+```python
+if bot.startupScannerTask and not bot.startupScannerTask.done():
+    try:
+        await asyncio.wait_for(bot.startupScannerTask, timeout=30)
+    except asyncio.TimeoutError:
+        bot.startupScannerTask.cancel()
+        await bot.startupScannerTask
+
+await bot.logDispatcher.flushAndClose()
+await bot.databaseManager.flushAndClose()
+```
+
+Test: khởi động scan lớn, gửi SIGTERM/Ctrl+C giữa scan, xác nhận không có enqueue sau khi DB đóng.
+
+## 2. [HIGH][VERIFIED] Attachment-only message edits bị bỏ qua
+
+### Vị trí
+
+- `events.py`, `on_raw_message_edit()`.
+
+### Nguyên nhân
+
+Handler return ngay nếu `"content" not in payload.data`. Discord raw edit có thể chỉ chứa thay đổi attachment/embed hoặc metadata; code không fetch message mới và không cập nhật `attachments`, `contentTypes`, `embeds` trong DB.
+
+### Cách sửa
+
+1. Không chỉ kiểm tra `content`.
+2. Khi payload thiếu field cần thiết, fetch message bằng channel/message ID nếu có thể.
+3. So sánh content, attachment URLs, MIME types, embeds và reply reference với DB.
+4. Tạo một action update đầy đủ, kèm `updatedAt`.
+5. Log edit với before/after data; nếu attachment cũ đã mất, ghi rõ trạng thái unavailable.
+
+Ví dụ logic:
+
+```python
+message = await channel.fetch_message(payload.message_id)
+newFields = extract_message_fields(message)
+oldRow = await load_message(payload.message_id)
+if newFields != oldRow:
+    accepted = await enqueueAction("updateFields", (message.id, newFields))
+    if accepted:
+        await enqueueLogAction(build_edit_log(oldRow, newFields))
+```
+
+Test: content giữ nguyên nhưng thêm/xoá attachment; thay embed; attachment-only edit khi Message Content Intent vẫn hoạt động.
+
+## 3. [HIGH][VERIFIED] Delete log có thể được gửi dù database delete enqueue thất bại
+
+### Vị trí
+
+- `events.py`, `on_raw_message_delete()` và `on_raw_bulk_message_delete()`.
+
+### Nguyên nhân
+
+Code kiểm tra kết quả `enqueueAction()` để cập nhật counters nhưng vẫn enqueue log delete/bulk-delete ngay cả khi DB action trả `False`. Audit log có thể nói message đã được xử lý trong khi DB record vẫn còn; retry/reconciliation sau đó có thể tạo log trùng.
+
+### Cách sửa
+
+1. Quyết định semantics rõ: log chỉ gửi sau khi DB delete được commit, hoặc log phải ghi trạng thái `pending`.
+2. Không dùng “đã enqueue” như “đã commit”; đổi `enqueueAction()` thành action receipt/future trả kết quả commit.
+3. Với delete, persist event vào durable pending table trước khi gửi Discord log.
+4. Worker xử lý DB delete thành công thì phát signal cho log worker.
+5. Nếu log gửi trước DB commit vì yêu cầu latency, embed phải ghi `storageStatus=pending` và có reconciliation.
+
+Test: force DB queue full/SQLite lock trong single delete và bulk delete; kiểm tra không có audit record misleading.
+
+## 4. [HIGH][VERIFIED] Live edit chỉ cập nhật content, không cập nhật toàn bộ message fields
+
+### Vị trí
+
+- `events.py`, `on_raw_message_edit()`.
+- `database.py`, nhánh `updateFields`.
+
+### Nguyên nhân
+
+Handler hiện tạo `{"content": newContent, "updatedAt": ...}`. Attachment, content types, embeds và reply reference mới không được ghi. Startup scanner có logic so sánh các field này nhưng live path lại bỏ qua, dẫn tới database không nhất quán tùy message được sửa lúc bot online hay offline.
+
+### Cách sửa
+
+1. Chuẩn hóa một hàm `extract_message_fields()` dùng chung cho `on_message`, raw edit và scanner.
+2. Raw edit fetch message mới rồi tạo full update payload.
+3. Dùng `updatedAt` trong điều kiện SQL để stale update không ghi đè live update.
+4. Log before/after theo field changed, không chỉ content.
+
+Ví dụ SQL:
+
+```sql
+UPDATE cachedMessages
+SET content=?, attachments=?, embeds=?, contentTypes=?, updatedAt=?
+WHERE messageId=? AND updatedAt <= ?;
+```
+
+Test: edit content, attachment, embed và nhiều edit liên tiếp khi scanner đang chạy.
+
+## 5. [MEDIUM][VERIFIED] `normalizeTimestamp()` và `getMessagesInIdRange()` không có caller
+
+### Vị trí
+
+- `scanner.py:18-21`, `normalizeTimestamp()`.
+- `database.py`, `getMessagesInIdRange()`.
+
+### Xác minh
+
+Search toàn repo chỉ thấy định nghĩa, không thấy call site. Đây là dead function, làm tăng surface area và gây hiểu nhầm rằng scanner dùng range query.
+
+### Cách sửa
+
+1. Trước khi xóa, kiểm tra external entrypoint/plugin có import trực tiếp không.
+2. Nếu không có public API dependency, xóa function và import liên quan.
+3. Nếu muốn giữ API, viết test/call site thật và ghi rõ contract; không giữ hàm “dự phòng” không dùng.
+4. Chạy static check sau khi xóa.
+
+## 6. [MEDIUM][VERIFIED] Cache metrics không bao giờ được cập nhật
+
+### Vị trí
+
+- `bot.py:21-80`, các field `cacheHits`, `cacheMisses` và methods `incrementCacheHit()`/`incrementCacheSubMiss()`.
+- `metricsReportingTask()` chỉ in các giá trị này.
+
+### Nguyên nhân
+
+Không có caller thực tế cho hai increment methods. Dashboard luôn hiển thị 0, tạo false confidence về hiệu quả cache.
+
+### Cách sửa
+
+Chọn một trong hai hướng, không giữ trạng thái giả:
+
+- Nếu không có cache thật: xóa fields, methods và output `Hits/Misses` khỏi metrics/health report.
+- Nếu muốn đo cache: định nghĩa rõ hit/miss tại `getMessage`, `getMessagesBulk`, media download hoặc reply cache; increment đúng nơi lookup trả hit/miss và viết test counter.
+
+Test: lookup hit và miss phải thay đổi metric đúng một lần, không double count khi retry.
+
+## 7. [MEDIUM][VERIFIED] Một số state/parameter chỉ được ghi nhưng không có tác dụng
+
+### Vị trí
+
+- `bot.py`: `scanComplete`, `startupScanTask` lifecycle chưa được consume đầy đủ.
+- `generateAndSendReport(isManual)`: parameter `isManual` không được dùng.
+- `scanner.py`: `normalizeTimestamp()` không được gọi.
+
+### Cách sửa
+
+1. Dùng `rg` để xác định mọi writer/reader trước khi thay đổi.
+2. Với `scanComplete`, dùng nó để chặn report/commands trước khi scan hoàn tất hoặc xóa state nếu không cần.
+3. Xóa `isManual` nếu hai mode có cùng behavior; nếu cần phân biệt manual/scheduled, dùng nó để ghi label/log/permission rõ ràng.
+4. Không giữ biến chỉ để “có vẻ hữu ích”; mỗi state phải có invariant và test.
+
+## 8. [MEDIUM][VERIFIED] Replay dead letters có thể cạnh tranh với shutdown/normal workers
+
+### Vị trí
+
+- `log_dispatcher.py`, `replayWorker()` và `replayDeadLetters()`.
+- `events.py`, command replay dead letters.
+
+### Nguyên nhân
+
+Replay gọi trực tiếp `executeLogPipeline()` trong khi normal log workers cũng đang gửi log. Không có lease/claim trên DB row; command và replay worker có thể lấy cùng item, gửi duplicate hoặc xóa row khi worker khác vừa retry.
+
+### Cách sửa
+
+1. Thêm trạng thái `claimedAt`, `claimOwner`, `nextRetryAt` vào `logDeadLetters`.
+2. Claim row atomic trong transaction trước khi replay.
+3. Chỉ delete row bởi owner sau success; nếu crash, lease hết hạn để worker khác claim lại.
+4. Dùng một dispatcher path chung thay vì gọi pipeline trực tiếp không qua concurrency control.
+5. Shutdown phải cancel replay task trước khi flush queue.
+
+Test: replay command đồng thời với replay worker, kill process sau claim trước send, và retry duplicate prevention.

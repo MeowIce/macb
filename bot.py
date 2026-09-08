@@ -27,8 +27,6 @@ class MetricsTracker:
         self.downloadTimeEwma = 0.0
         self.queueDroppedCount = 0
         self.retryCount = 0
-        self.cacheHits = 0
-        self.cacheMisses = 0
         self.throughputCount = 0
         self.alpha = 0.2
         self.lastThroughputCheck = time.perf_counter()
@@ -72,12 +70,6 @@ class MetricsTracker:
 
     def incrementDeadLetterPersistFailed(self):
         pass
-
-    def incrementCacheHit(self):
-        self.cacheHits += 1
-
-    def incrementCacheSubMiss(self):
-        self.cacheMisses += 1
 
     def recordThroughput(self, count):
         self.throughputCount += count
@@ -254,7 +246,7 @@ class MACB(commands.Bot):
                     f"[METRICS-EWMA] DB Queue: {metricsTracker.dbQueueLength} | Log Queue: {metricsTracker.logQueueLength} | "
                     f"DB Latency: {dbAvg:.2f}ms | Send Latency: {sendAvg:.2f}ms | Download Time: {dlAvg:.2f}ms | "
                     f"Throughput: {metricsTracker.currentThroughputRps:.2f} rps | Retries: {metricsTracker.retryCount} | "
-                    f"Hits: {metricsTracker.cacheHits} | Misses: {metricsTracker.cacheMisses} | Dropped: {metricsTracker.queueDroppedCount}"
+                    f"Dropped: {metricsTracker.queueDroppedCount}"
                 )
             except asyncio.CancelledError:
                 break
@@ -305,8 +297,10 @@ class MACB(commands.Bot):
         newMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyNewMessages)
         editedMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyEditedMessages)
         deletedMsgsStr = getLocaleString("msgCountSuffix", count=self.hourlyDeletedMessages)
+        dispatchModeStr = getLocaleString("reportTypeManual") if isManual else getLocaleString("reportTypeScheduled")
         descriptionContent = (
             f"**{getLocaleString('publishTime')}**\n{currentTimeStr}\n\n"
+            f"**{getLocaleString('reportTypeField')}**\n{dispatchModeStr}\n\n"
             f"**{getLocaleString('totalCurrentMessages')}**\n{totalMsgsStr}\n\n"
             f"**{getLocaleString('newMessagesGenerated')}**\n{newMsgsStr}\n\n"
             f"**{getLocaleString('editedMessagesField')}**\n{editedMsgsStr}\n\n"
@@ -326,6 +320,7 @@ class MACB(commands.Bot):
             f" {consoleDivider}\n"
             f" {getLocaleString('targetLogChannelIdField')}: {config.logChannelId}\n"
             f" {getLocaleString('publishTime')}: {currentTimeStr}\n"
+            f" {getLocaleString('reportTypeField')}: {dispatchModeStr}\n"
             f" -----------------------------------------------------\n"
             f" {getLocaleString('totalCurrentMessages')}: {totalMsgsStr}\n"
             f" {getLocaleString('newMessagesGenerated')}: {newMsgsStr}\n"
@@ -351,6 +346,17 @@ async def main():
         pass
     finally:
         print(getLocaleString("shuttingDown"))
+        scanTask = getattr(bot.botEvents, "startupScanTask", None)
+        if scanTask and not scanTask.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(scanTask), timeout=15.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                if not scanTask.done():
+                    scanTask.cancel()
+                    try:
+                        await scanTask
+                    except asyncio.CancelledError:
+                        pass
         if bot.metricsTask and not bot.metricsTask.done():
             bot.metricsTask.cancel()
             try:

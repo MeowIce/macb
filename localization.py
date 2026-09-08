@@ -143,6 +143,9 @@ stringsMap = {
         "replayDescription": "Gửi lại các tin nhắn log trong Dead Letter Queue",
         "replaySuccess": "Đã gửi lại thành công {count} dead letters.",
         "replayEmpty": "Không có dead letters nào cần gửi lại.",
+        "reportTypeManual": "Thủ công (Slash Command)",
+        "reportTypeScheduled": "Tự động (Lịch định kỳ)",
+        "reportTypeField": "Phương thức phát hành",
     },
     "en": {
         "text": "Text",
@@ -287,6 +290,9 @@ stringsMap = {
         "replayDescription": "Replay dead-letter log payloads from SQLite queue",
         "replaySuccess": "Successfully replayed {count} dead letters.",
         "replayEmpty": "No dead letters pending replay.",
+        "reportTypeManual": "Manual (Slash Command)",
+        "reportTypeScheduled": "Scheduled (Automated)",
+        "reportTypeField": "Dispatch Mode",
     }
 }
 

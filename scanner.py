@@ -15,10 +15,6 @@ def cleanAttachmentUrl(urlStr):
         return ""
     return urlStr.split("?")[0]
 
-def normalizeTimestamp(dtObj):
-    if not dtObj:
-        return None
-    return int(dtObj.timestamp())
 
 def checkMessageEditStatus(dbContent, discordMsg):
     oldContent = dbContent if dbContent is not None else ""

@@ -105,11 +105,16 @@ class DatabaseManager:
                     payload TEXT,
                     attempts INTEGER,
                     lastError TEXT,
-                    createdAt REAL
+                    createdAt REAL,
+                    claimedAt REAL DEFAULT 0.0
                 )
             """)
             try:
                 cursor.execute("ALTER TABLE cachedMessages ADD COLUMN updatedAt REAL DEFAULT 0.0")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cursor.execute("ALTER TABLE logDeadLetters ADD COLUMN claimedAt REAL DEFAULT 0.0")
             except sqlite3.OperationalError:
                 pass
             cursor.execute("SELECT messageId, updatedAt FROM cachedMessages LIMIT 1")
@@ -338,21 +343,6 @@ class DatabaseManager:
         except Exception as ex:
             logger.error(f"Error fetching startup metadata combo: {str(ex)}")
             return None, {}
-
-    def getMessagesInIdRange(self, channelId, minId, maxId):
-        try:
-            cursor = self.sharedReadConn.cursor()
-            query = "SELECT authorId, authorName, authorAvatar, content, attachments, replyReference, contentTypes, messageId FROM cachedMessages WHERE channelId = ? AND messageId >= ? AND messageId <= ?"
-            cursor.execute(query, (channelId, minId, maxId))
-            rows = cursor.fetchall()
-            cursor.close()
-            cacheMap = {}
-            for row in rows:
-                cacheMap[row[7]] = row[:7]
-            return cacheMap
-        except Exception as ex:
-            logger.error(f"Error reading message range for channel {channelId}: {str(ex)}")
-            return {}
 
     def getMessagesFromId(self, channelId, minId):
         try:

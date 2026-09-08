@@ -110,11 +110,21 @@ class LogDispatcher:
         if not dbMgr or not dbMgr.writeConn or not dbMgr.isReady:
             return 0
         rows = []
+        nowTime = time.time()
+        leaseExpiry = nowTime - 60.0
         try:
             async with dbMgr.writeLock:
                 cursor = dbMgr.writeConn.cursor()
-                cursor.execute("SELECT id, logType, payload, attempts FROM logDeadLetters ORDER BY id ASC LIMIT ?", (limit,))
+                cursor.execute(
+                    "SELECT id, logType, payload, attempts FROM logDeadLetters WHERE claimedAt < ? ORDER BY id ASC LIMIT ?",
+                    (leaseExpiry, limit)
+                )
                 rows = cursor.fetchall()
+                if rows:
+                    claimedIds = [row[0] for row in rows]
+                    placeholders = ", ".join(["?"] * len(claimedIds))
+                    cursor.execute(f"UPDATE logDeadLetters SET claimedAt = ? WHERE id IN ({placeholders})", [nowTime] + claimedIds)
+                    dbMgr.writeConn.commit()
                 cursor.close()
         except Exception as readEx:
             logger.error(f"Error reading log dead letters for replay: {str(readEx)}")
@@ -136,7 +146,7 @@ class LogDispatcher:
                 try:
                     async with dbMgr.writeLock:
                         cursor = dbMgr.writeConn.cursor()
-                        cursor.execute("UPDATE logDeadLetters SET attempts = attempts + 1, lastError = ? WHERE id = ?", (str(replayErr), rowId))
+                        cursor.execute("UPDATE logDeadLetters SET attempts = attempts + 1, lastError = ?, claimedAt = 0.0 WHERE id = ?", (str(replayErr), rowId))
                         dbMgr.writeConn.commit()
                         cursor.close()
                 except Exception:
