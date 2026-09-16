@@ -116,7 +116,7 @@ class LogDispatcher:
             async with dbMgr.writeLock:
                 cursor = dbMgr.writeConn.cursor()
                 cursor.execute(
-                    "SELECT id, logType, payload, attempts FROM logDeadLetters WHERE claimedAt < ? ORDER BY id ASC LIMIT ?",
+                    "SELECT id, logType, payload, attempts FROM logDeadLetters WHERE claimedAt < ? AND attempts < 5 ORDER BY id ASC LIMIT ?",
                     (leaseExpiry, limit)
                 )
                 rows = cursor.fetchall()
