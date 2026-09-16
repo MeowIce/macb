@@ -32,6 +32,8 @@ class StartupScanner:
 
     async def executeScan(self, guild):
         startTime = time.perf_counter()
+        self.bot.isScanning = True
+        await self.bot.updateBotPresence(isSyncing=True)
         
         oldestId, latestMessagesMap = await asyncio.to_thread(self.bot.databaseManager.getStartupMetadata)
         isFirstScan = not latestMessagesMap
@@ -75,6 +77,7 @@ class StartupScanner:
         print()
         duration = time.perf_counter() - startTime
         self.bot.totalScanTimeStr = f"{duration:.2f}"
+        self.bot.isScanning = False
         self.bot.scanComplete = True
         
         self.bot.totalCachedMessages = await asyncio.to_thread(self.bot.databaseManager.getTotalMessageCount)

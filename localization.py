@@ -146,7 +146,8 @@ stringsMap = {
         "reportTypeManual": "Thủ công (Slash Command)",
         "reportTypeScheduled": "Tự động (Lịch định kỳ)",
         "reportTypeField": "Phương thức phát hành",
-        "botStatus": "Giám sát {count:,} tin nhắn",
+        "botStatus": "{count:,} tin nhắn",
+        "botStatusSyncing": "Đang đồng bộ tin nhắn",
     },
     "en": {
         "text": "Text",
@@ -294,7 +295,8 @@ stringsMap = {
         "reportTypeManual": "Manual (Slash Command)",
         "reportTypeScheduled": "Scheduled (Automated)",
         "reportTypeField": "Dispatch Mode",
-        "botStatus": "Monitoring {count:,} total messages",
+        "botStatus": "{count:,} total messages",
+        "botStatusSyncing": "Synchronizing messages",
     }
 }
 

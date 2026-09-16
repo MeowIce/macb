@@ -225,10 +225,11 @@ class MACB(commands.Bot):
         self.totalEditedMessages = 0
         self.totalDeletedMessages = 0
         self.scanComplete = False
+        self.isScanning = True
         self.metricsTask = None
         self.periodicTask = None
         self.presenceTask = None
-        self.lastReportedPresenceCount = None
+        self.lastReportedPresenceText = None
 
     async def setup_hook(self):
         self.botEvents.setupEvents()
@@ -237,18 +238,25 @@ class MACB(commands.Bot):
         self.periodicTask = self.loop.create_task(self.periodicReportTask())
         self.presenceTask = self.loop.create_task(self.presenceUpdateTask())
 
-    async def updateBotPresence(self, count=None):
+    async def updateBotPresence(self, count=None, isSyncing=False):
         try:
+            if isSyncing or getattr(self, "isScanning", False):
+                statusText = getLocaleString("botStatusSyncing")
+                if statusText == self.lastReportedPresenceText:
+                    return
+                await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=statusText))
+                self.lastReportedPresenceText = statusText
+                return
             if count is None:
                 count = self.totalCachedMessages
                 if count <= 0 and self.databaseManager.isReady:
                     count = await asyncio.to_thread(self.databaseManager.getTotalMessageCount)
                     self.totalCachedMessages = count
-            if count == self.lastReportedPresenceCount:
-                return
             statusText = getLocaleString("botStatus", count=count)
-            await self.change_presence(activity=discord.CustomActivity(name=statusText))
-            self.lastReportedPresenceCount = count
+            if statusText == self.lastReportedPresenceText:
+                return
+            await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=statusText))
+            self.lastReportedPresenceText = statusText
         except Exception as ex:
             logger.debug(f"Failed to update bot presence: {str(ex)}")
 
