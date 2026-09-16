@@ -306,7 +306,7 @@ class MACB(commands.Bot):
             f"**{getLocaleString('editedMessagesField')}**\n{editedMsgsStr}\n\n"
             f"**{getLocaleString('deletedMessagesField')}**\n{deletedMsgsStr}"
         )
-        reportView = discord.ui.LayoutView()
+        reportView = discord.ui.LayoutView(timeout=None)
         reportContainer = discord.ui.Container(accent_color=discord.Color.blue())
         reportContainer.add_item(discord.ui.TextDisplay(f"### {titleText}\n\n{descriptionContent}"))
         reportView.add_item(reportContainer)

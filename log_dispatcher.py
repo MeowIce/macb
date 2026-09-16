@@ -273,7 +273,7 @@ class LogDispatcher:
         titleText = getLocaleString("msgDeletedOffline") if isOffline else getLocaleString("msgDeleted")
         colorValue = discord.Color.dark_red() if isOffline else discord.Color.red()
         
-        layoutView = discord.ui.LayoutView()
+        layoutView = discord.ui.LayoutView(timeout=None)
         container = discord.ui.Container(accent_color=colorValue)
         
         headerText = (
@@ -283,7 +283,7 @@ class LogDispatcher:
             f"**{getLocaleString('sentTime')}:** {sentTimeStr}\n"
             f"**ID:** `{msg['messageId']}`"
         )
-        if replyId:
+        if replyId and not replyContent:
             headerText += f"\n**{getLocaleString('replyTo')}:** `{replyId}`"
 
         if msg.get("authorAvatar"):
@@ -296,11 +296,11 @@ class LogDispatcher:
         if replyId and replyContent:
             bodyText += f"\n\n**{getLocaleString('replyTo')}:** `{replyId}`\n```{replyContent}```"
 
-        txtFile = None
+        txtFiles = []
         content = msg.get("content", "")
         if content:
             if len(content) > 1024:
-                txtFile = discord.File(io.BytesIO(content.encode("utf-8")), filename=f"{msg['messageId']}_content.txt")
+                txtFiles.append((f"{msg['messageId']}_content.txt", content.encode("utf-8")))
                 bodyText += f"\n\n**{getLocaleString('content')}:** {getLocaleString('overLimit')}"
             else:
                 bodyText += f"\n\n**{getLocaleString('content')}:**\n```{content}```"
@@ -383,8 +383,8 @@ class LogDispatcher:
                         mediaItems.append(discord.MediaGalleryItem(f"attachment://{filename}"))
             if mediaItems:
                 container.add_item(discord.ui.MediaGallery(*mediaItems))
-        if txtFile:
-            validFiles.append((txtFile.filename, txtFile.fp.read()))
+        if txtFiles:
+            validFiles.extend(txtFiles)
         layoutView.add_item(container)
         await self.dispatchPayloadChunked(layoutView, validFiles)
 
@@ -403,7 +403,7 @@ class LogDispatcher:
             logReport.append("-" * 40)
         reportBytes = "\n".join(logReport).encode("utf-8")
         
-        layoutView = discord.ui.LayoutView()
+        layoutView = discord.ui.LayoutView(timeout=None)
         container = discord.ui.Container(accent_color=discord.Color.dark_magenta())
         currentTimeStr = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         descText = getLocaleString("bulkDesc", count=len(messagesList), channelId=channelId, reason=reason)
@@ -423,7 +423,7 @@ class LogDispatcher:
         titleText = f"{getLocaleString('msgEdited')} (Offline)" if isOffline else getLocaleString("msgEdited")
         colorValue = discord.Color.dark_orange() if isOffline else discord.Color.orange()
         
-        layoutView = discord.ui.LayoutView()
+        layoutView = discord.ui.LayoutView(timeout=None)
         container = discord.ui.Container(accent_color=colorValue)
         
         headerText = (
@@ -485,6 +485,8 @@ class LogDispatcher:
             currentChunkSize += fSize
         if currentChunk:
             await self.sendChunk(view if isFirstMessage else None, currentChunk)
+        elif isFirstMessage and view:
+            await self.sendChunk(view, [])
 
     async def sendChunk(self, view, filePayloads):
         sent = await self.sendLogWithRetry(view=view, filePayloads=filePayloads)

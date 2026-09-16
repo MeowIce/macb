@@ -84,29 +84,35 @@ cd macb
 ### 2. Install Dependencies
 Install the required packages using `pip`:
 ```bash
-pip install discord.py psutil aiohttp
+pip install -r requirements.txt
 ```
 
-### 3. Configuration (`config.py`)
+### 3. Configuration (`.env`)
 
-Open `config.py` and configure your settings:
+Copy `.env.example` to `.env` and fill in your settings:
 
-*   `botToken`: Your Discord Bot Token.
-*   `targetGuildId`: The ID of the Discord Guild (Server) you want to monitor.
-*   `logChannelId`: The ID of the text channel where log embeds should be sent.
-*   `botLang`: Choose `"en"` for English or `"vi"` for Vietnamese.
+```bash
+cp .env.example .env
+```
 
-Example `config.py` structure:
-```python
-botToken = "YOUR_DISCORD_BOT_TOKEN"
-targetGuildId = 123456789012345678   # Target Server ID
-logChannelId = 987654321098765432    # Target Log Channel ID
-botLang = "en"                       # Language ('en' or 'vi')
+Key environment variables in `.env`:
+
+*   `BOT_TOKEN`: Your Discord Bot Token.
+*   `TARGET_GUILD_ID`: The ID of the Discord Guild (Server) you want to monitor.
+*   `LOG_CHANNEL_ID`: The ID of the text channel where log messages should be sent.
+*   `BOT_LANG`: Choose `"en"` for English or `"vi"` for Vietnamese.
+
+Example `.env` content:
+```env
+BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN
+TARGET_GUILD_ID=123456789012345678
+LOG_CHANNEL_ID=987654321098765432
+BOT_LANG=en
 ```
 > [!NOTE]
-> **On `maxParallelScans = 36` and `maxParallelDownloads = 16`**: These settings are optimized for high-throughput systems. If your hosting environment (VPS/Home server) has limited CPU or network speed, reduce these value to `15` or `20` to prevent network congestion.  
+> **On `MAX_PARALLEL_SCANS = 30` and `MAX_PARALLEL_DOWNLOADS = 16`**: These settings are optimized for high-throughput systems. If your hosting environment (VPS/Home server) has limited CPU or network speed, reduce these values to `15` or `20` to prevent network congestion.  
 >
-> The rest should be left intact, unless you know what you're doing.
+> The rest can be left to default values unless specific tuning is needed.
 ## How to Run
 
 Run the bot directly via the terminal:

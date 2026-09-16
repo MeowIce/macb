@@ -394,7 +394,7 @@ class BotEvents:
             watchdogStatus = getLocaleString("healthyStatus") if watchdogHealthy else getLocaleString("warningStatus")
             schedType = getattr(config, "reportTaskSched", "hourly")
             scheduleText = getLocaleString("reportScheduleHourlyValue") if schedType == "hourly" else getLocaleString("reportScheduleDailyValue")
-            statsView = discord.ui.LayoutView()
+            statsView = discord.ui.LayoutView(timeout=None)
             statsContainer = discord.ui.Container()
             statsContent = (
                 f"### {getLocaleString('statsTitle')}\n\n"
@@ -467,7 +467,7 @@ class BotEvents:
                 f"• **{getLocaleString('logWorkersField')}:** {', '.join(logWorkerStates) if logWorkerStates else getLocaleString('taskMissing')}"
             ]
 
-            healthView = discord.ui.LayoutView()
+            healthView = discord.ui.LayoutView(timeout=None)
             healthContainer = discord.ui.Container()
             healthContent = (
                 f"### {getLocaleString('healthTitle')}\n\n"

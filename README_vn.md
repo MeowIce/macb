@@ -88,33 +88,40 @@ cd macb
 Cài đặt các gói thư viện cần thiết thông qua công cụ `pip`:
 
 ```bash
-pip install discord.py psutil aiohttp
+pip install -r requirements.txt
 
 ```
 
-### 3. Thiết lập cấu hình (`config.py`)
+### 3. Thiết lập cấu hình (`.env`)
 
-Mở tệp `config.py` và điều chỉnh các thông số sau:
+Sao chép tệp mẫu `.env.example` thành `.env` và điền cấu hình:
 
-* `botToken`: Mã Token Bot Discord của bạn.
-* `targetGuildId`: Mã ID của Máy chủ Discord cần giám sát.
-* `logChannelId`: Mã ID của kênh văn bản dùng để nhận nội dung log.
-* `botLang`: Lựa chọn ngôn ngữ hiển thị; nhập `"en"` cho tiếng Anh hoặc `"vi"` cho tiếng Việt.
+```bash
+cp .env.example .env
 
-Cấu trúc tệp mẫu `config.py`:
+```
 
-```python
-botToken = "YOUR_DISCORD_BOT_TOKEN"
-targetGuildId = 123456789012345678    # ID Server mục tiêu
-logChannelId = 987654321098765432     # ID Kênh nhận Log mục tiêu
-botLang = "en"                        # Cấu hình ngôn ngữ ('en' hoặc 'vi')
+Các biến môi trường chính trong `.env`:
+
+* `BOT_TOKEN`: Mã Token Bot Discord của bạn.
+* `TARGET_GUILD_ID`: Mã ID của Máy chủ Discord cần giám sát.
+* `LOG_CHANNEL_ID`: Mã ID của kênh văn bản dùng để nhận nội dung log.
+* `BOT_LANG`: Lựa chọn ngôn ngữ hiển thị; nhập `"en"` cho tiếng Anh hoặc `"vi"` cho tiếng Việt.
+
+Cấu trúc mẫu trong `.env`:
+
+```env
+BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN
+TARGET_GUILD_ID=123456789012345678
+LOG_CHANNEL_ID=987654321098765432
+BOT_LANG=vi
 
 ```
 
 > [!NOTE]
-> **Về thông số maxParallelScans = 36 và maxParallelDownloads = 16**: Các option này được tối ưu hóa cho các hệ thống có băng thông lớn. Nếu môi trường vận hành (VPS/Home server) có cấu hình CPU hạn chế hoặc đường truyền mạng yếu, bạn nên giảm các giá trị này xuống ngưỡng `15` hoặc `20` để tránh gây nghẽn mạng.  
+> **Về thông số MAX_PARALLEL_SCANS = 30 và MAX_PARALLEL_DOWNLOADS = 16**: Các option này được tối ưu hóa cho các hệ thống có băng thông lớn. Nếu môi trường vận hành (VPS/Home server) có cấu hình CPU hạn chế hoặc đường truyền mạng yếu, bạn nên giảm các giá trị này xuống ngưỡng `15` hoặc `20` để tránh gây nghẽn mạng.  
 >
-> Các thông số còn lại nên giữ nguyên theo mặc định, trừ khi bạn hiểu rõ cấu trúc hệ thống.
+> Các thông số còn lại có thể giữ nguyên theo mặc định.
 
 ## Chạy bot
 
