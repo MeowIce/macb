@@ -78,6 +78,7 @@ class StartupScanner:
         self.bot.scanComplete = True
         
         self.bot.totalCachedMessages = await asyncio.to_thread(self.bot.databaseManager.getTotalMessageCount)
+        await self.bot.updateBotPresence(self.bot.totalCachedMessages)
         
         if isFirstScan:
             print(getLocaleString("scanCompleteFirstStr", count=self.bot.currentBootScanned, time=self.bot.totalScanTimeStr))

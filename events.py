@@ -121,8 +121,8 @@ class BotEvents:
 
                 self.bot.logDispatcher.startWorkers(asyncio.get_running_loop())
                 self.startupScanTask = asyncio.create_task(self.bot.startupScanner.executeScan(targetGuild))
-
                 self.isInitialized = True
+                await self.bot.updateBotPresence()
 
         @self.bot.event
         async def on_message(message):

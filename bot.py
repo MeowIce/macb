@@ -227,12 +227,41 @@ class MACB(commands.Bot):
         self.scanComplete = False
         self.metricsTask = None
         self.periodicTask = None
+        self.presenceTask = None
+        self.lastReportedPresenceCount = None
 
     async def setup_hook(self):
         self.botEvents.setupEvents()
         self.watchdog.watchdogTask = self.loop.create_task(self.watchdog.startWatchdogLoop())
         self.metricsTask = self.loop.create_task(self.metricsReportingTask())
         self.periodicTask = self.loop.create_task(self.periodicReportTask())
+        self.presenceTask = self.loop.create_task(self.presenceUpdateTask())
+
+    async def updateBotPresence(self, count=None):
+        try:
+            if count is None:
+                count = self.totalCachedMessages
+                if count <= 0 and self.databaseManager.isReady:
+                    count = await asyncio.to_thread(self.databaseManager.getTotalMessageCount)
+                    self.totalCachedMessages = count
+            if count == self.lastReportedPresenceCount:
+                return
+            statusText = getLocaleString("botStatus", count=count)
+            await self.change_presence(activity=discord.CustomActivity(name=statusText))
+            self.lastReportedPresenceCount = count
+        except Exception as ex:
+            logger.debug(f"Failed to update bot presence: {str(ex)}")
+
+    async def presenceUpdateTask(self):
+        await self.wait_until_ready()
+        while True:
+            try:
+                await asyncio.sleep(60)
+                await self.updateBotPresence()
+            except asyncio.CancelledError:
+                break
+            except Exception as ex:
+                logger.debug(f"Presence update task error: {str(ex)}")
 
     async def metricsReportingTask(self):
         while True:
@@ -372,6 +401,12 @@ async def main():
             bot.periodicTask.cancel()
             try:
                 await bot.periodicTask
+            except asyncio.CancelledError:
+                pass
+        if bot.presenceTask and not bot.presenceTask.done():
+            bot.presenceTask.cancel()
+            try:
+                await bot.presenceTask
             except asyncio.CancelledError:
                 pass
         await bot.logDispatcher.flushAndClose()
