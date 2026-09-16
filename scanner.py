@@ -16,6 +16,25 @@ def cleanAttachmentUrl(urlStr):
     return urlStr.split("?")[0]
 
 
+def extractScanTuple(msg, channel):
+    attachmentsList = [att.url for att in msg.attachments]
+    contentTypesList = [att.content_type for att in msg.attachments]
+    stickersList = [st.url for st in msg.stickers] if hasattr(msg, "stickers") else []
+    embedsData = [emb.to_dict() for emb in msg.embeds]
+    replyRef = {"messageId": msg.reference.message_id, "channelId": msg.reference.channel_id} if msg.reference and msg.reference.message_id else {}
+    avatarUrl = msg.author.display_avatar.url if msg.author.display_avatar else ""
+    authorDisplayName = getattr(msg.author, "display_name", "")
+    authorGlobalName = getattr(msg.author, "global_name", "")
+    parentName = getattr(channel, "parent", None).name if getattr(channel, "parent", None) else ""
+    return (
+        msg.id, msg.author.id, msg.author.name, authorDisplayName, authorGlobalName, avatarUrl,
+        channel.id, channel.name, parentName,
+        msg.content, json.dumps(attachmentsList), json.dumps(stickersList), json.dumps(embedsData),
+        json.dumps(replyRef), msg.type.value if hasattr(msg.type, "value") else 0, json.dumps(contentTypesList),
+        msg.created_at.timestamp()
+    )
+
+
 def checkMessageEditStatus(dbContent, discordMsg):
     oldContent = dbContent if dbContent is not None else ""
     newContent = discordMsg.content if discordMsg.content is not None else ""
@@ -59,7 +78,7 @@ class StartupScanner:
             channelQueue.put_nowait(channel)
             
         scanSemaphore = asyncio.Semaphore(config.maxParallelScans)
-        workerCount = min(config.maxParallelScans, 32 if not isFirstScan else 16)
+        workerCount = min(config.maxParallelScans, 28)
         
         async def worker():
             while not channelQueue.empty():
@@ -102,36 +121,41 @@ class StartupScanner:
             if isinstance(channel, discord.Thread) and channel.archived:
                 return
 
-            fetchedMessagesList = []
-
-            fetchComplete = False
             if isFirstScan:
+                chunkTuples = []
                 async for msg in channel.history(limit=None, oldest_first=False):
                     if msg.author.bot:
                         continue
                     localMsgCount += 1
-                    fetchedMessagesList.append(msg)
-                fetchComplete = True
-            else:
-                async for msg in channel.history(limit=100, oldest_first=False):
-                    if msg.author.bot:
+                    msgTuple = extractScanTuple(msg, channel)
+                    chunkTuples.append(msgTuple)
+                    if self.bot.globalOldestDate is None or msg.created_at < self.bot.globalOldestDate:
+                        self.bot.globalOldestDate = msg.created_at
+                    if len(chunkTuples) >= 250:
+                        await self.bot.databaseManager.enqueueAction("bulkSave", chunkTuples)
+                        chunkTuples = []
+                if chunkTuples:
+                    await self.bot.databaseManager.enqueueAction("bulkSave", chunkTuples)
+                return
+
+            fetchedMessagesList = []
+            async for msg in channel.history(limit=100, oldest_first=False):
+                if msg.author.bot:
+                    continue
+                localMsgCount += 1
+                fetchedMessagesList.append(msg)
+
+            if maxLocalId:
+                async for extraMsg in channel.history(after=discord.Object(id=maxLocalId), limit=None, oldest_first=True):
+                    if extraMsg.author.bot:
                         continue
                     localMsgCount += 1
-                    fetchedMessagesList.append(msg)
-
-                if maxLocalId:
-                    async for extraMsg in channel.history(after=discord.Object(id=maxLocalId), limit=None, oldest_first=True):
-                        if extraMsg.author.bot:
-                            continue
-                        localMsgCount += 1
-                        fetchedMessagesList.append(extraMsg)
-                fetchComplete = True
+                    fetchedMessagesList.append(extraMsg)
 
             if not fetchedMessagesList:
                 return
                 
             minFetchedId = min(m.id for m in fetchedMessagesList)
-            
             localCacheMap = {}
             if maxLocalId:
                 localCacheMap = await asyncio.to_thread(self.bot.databaseManager.getMessagesFromId, channel.id, minFetchedId)
@@ -150,7 +174,6 @@ class StartupScanner:
                     dbRow = localCacheMap.get(msgId)
                     if dbRow:
                         dbAuthorId, dbAuthorName, dbAuthorAvatar, dbContent, dbAttachmentsRaw, dbReplyRefRaw, dbContentTypesRaw = dbRow
-                        
                         currentAttachmentsRaw = json.dumps([att.url for att in msg.attachments]) if msg.attachments else "[]"
                         currentContentTypesRaw = json.dumps([att.content_type for att in msg.attachments]) if msg.attachments else "[]"
                         currentReplyRefRaw = json.dumps({"messageId": msg.reference.message_id, "channelId": msg.reference.channel_id} if msg.reference and msg.reference.message_id else {})
@@ -160,7 +183,6 @@ class StartupScanner:
                             cleanDbAtts = [cleanAttachmentUrl(u) for u in rawDbAttList]
                         except Exception:
                             cleanDbAtts = []
-                            
                         cleanCurrentAtts = [cleanAttachmentUrl(att.url) for att in msg.attachments]
                         
                         try:
@@ -168,7 +190,6 @@ class StartupScanner:
                             cleanDbTypesList = rawDbTypesList
                         except Exception:
                             cleanDbTypesList = []
-                            
                         currentTypesList = [att.content_type for att in msg.attachments]
                         
                         dbReplyId = None
@@ -177,7 +198,6 @@ class StartupScanner:
                             dbReplyId = parsedReply.get("messageId")
                         except Exception:
                             dbReplyId = None
-                            
                         currentReplyId = msg.reference.message_id if msg.reference else None
                         
                         isContentModified = checkMessageEditStatus(dbContent, msg)
@@ -198,26 +218,8 @@ class StartupScanner:
                                 "contentTypes": currentContentTypesRaw
                             })
                 else:
-                    attachmentsList = [att.url for att in msg.attachments]
-                    contentTypesList = [att.content_type for att in msg.attachments]
-                    stickersList = [st.url for st in msg.stickers] if hasattr(msg, "stickers") else []
-                    embedsData = [emb.to_dict() for emb in msg.embeds]
-                    replyRef = {"messageId": msg.reference.message_id, "channelId": msg.reference.channel_id} if msg.reference and msg.reference.message_id else {}
-                    
-                    avatarUrl = msg.author.display_avatar.url if msg.author.display_avatar else ""
-                    authorDisplayName = getattr(msg.author, "display_name", "")
-                    authorGlobalName = getattr(msg.author, "global_name", "")
-                    
-                    msgTuple = (
-                        msgId, msg.author.id, msg.author.name, authorDisplayName, authorGlobalName, avatarUrl,
-                        channel.id, channel.name, getattr(channel, "parent", None).name if getattr(channel, "parent", None) else "",
-                        msg.content, json.dumps(attachmentsList), json.dumps(stickersList), json.dumps(embedsData),
-                        json.dumps(replyRef), msg.type.value if hasattr(msg.type, "value") else 0, json.dumps(contentTypesList),
-                        msg.created_at.timestamp()
-                    )
-                    assert len(msgTuple) == 17
+                    msgTuple = extractScanTuple(msg, channel)
                     channelMessagesList.append(msgTuple)
-                    
                     if self.bot.globalOldestDate is None or msg.created_at < self.bot.globalOldestDate:
                         self.bot.globalOldestDate = msg.created_at
                         
@@ -227,7 +229,7 @@ class StartupScanner:
                 await self.bot.databaseManager.enqueueAction("bulkUpdateOffline", dbUpdatesList)
                 self.bot.hourlyEditedMessages += len(dbUpdatesList)
                 self.bot.totalEditedMessages += len(dbUpdatesList)
-            if fetchComplete and maxLocalId and localCacheMap:
+            if maxLocalId and localCacheMap:
                 activeLiveIds = set(getattr(self.bot.botEvents, "activeLiveEventMessageIds", []))
                 for cId in localCacheMap.keys():
                     if cId not in fetchedIdsSet and cId not in activeLiveIds:

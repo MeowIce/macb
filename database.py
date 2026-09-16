@@ -50,6 +50,9 @@ class DatabaseManager:
                 self.writeConn.execute("PRAGMA journal_mode=WAL;")
                 self.writeConn.execute("PRAGMA busy_timeout=5000;")
                 self.writeConn.execute("PRAGMA synchronous=NORMAL;")
+                self.writeConn.execute("PRAGMA mmap_size=268435456;")
+                self.writeConn.execute("PRAGMA cache_size=-64000;")
+                self.writeConn.execute("PRAGMA temp_store=MEMORY;")
             
             if not self._isConnectionHealthy(self.sharedReadConn):
                 if self.sharedReadConn:
