@@ -1,0 +1,4 @@
+discord.py>=2.7.0
+aiohttp>=3.10.0
+psutil>=7.0.0
+python-dotenv>=1.0.0

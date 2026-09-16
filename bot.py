@@ -306,12 +306,11 @@ class MACB(commands.Bot):
             f"**{getLocaleString('editedMessagesField')}**\n{editedMsgsStr}\n\n"
             f"**{getLocaleString('deletedMessagesField')}**\n{deletedMsgsStr}"
         )
-        embedReport = discord.Embed(
-            title=titleText,
-            color=discord.Color.blue(),
-            description=descriptionContent
-        )
-        await logChannel.send(embed=embedReport)
+        reportView = discord.ui.LayoutView()
+        reportContainer = discord.ui.Container(accent_color=discord.Color.blue())
+        reportContainer.add_item(discord.ui.TextDisplay(f"### {titleText}\n\n{descriptionContent}"))
+        reportView.add_item(reportContainer)
+        await logChannel.send(view=reportView)
         
         consoleDivider = "=" * 55
         consoleReportBlock = (

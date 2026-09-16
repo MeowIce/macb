@@ -257,8 +257,10 @@ class LogDispatcher:
     async def processSingleDeletePipeline(self, channelId, msg, replyCache):
         createdUtc = discord.utils.snowflake_time(msg["messageId"])
         sentTimeStr = createdUtc.astimezone().strftime("%d/%m/%Y %H:%M:%S")
-        descriptionText = f"{getLocaleString('author')}: <@{msg['authorId']}> ({msg['authorId']})\n{getLocaleString('channel')}: <#{channelId}>\n{getLocaleString('sentTime')}: {sentTimeStr}\nID: {msg['messageId']}"
+        detectTimeStr = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         replyRef = msg.get("replyReference")
+        replyId = None
+        replyContent = None
         if replyRef and replyRef.get("messageId"):
             replyId = replyRef["messageId"]
             replyData = replyCache.get(replyId)
@@ -267,30 +269,50 @@ class LogDispatcher:
                 replyContent = getLocaleString("noTextContent")
             if len(replyContent) > 500:
                 replyContent = replyContent[:500] + "..."
-            descriptionText += f"\n{getLocaleString('replyTo')}: {replyId}"
         isOffline = msg.get("isOffline", False)
         titleText = getLocaleString("msgDeletedOffline") if isOffline else getLocaleString("msgDeleted")
         colorValue = discord.Color.dark_red() if isOffline else discord.Color.red()
-        embed = discord.Embed(title=titleText, color=colorValue, description=descriptionText)
-        embed.set_author(name=msg["authorName"], icon_url=msg["authorAvatar"])
-        embed.set_footer(text=f"{getLocaleString('sentTime')}: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-        msgType = determineMessageType(msg["content"], msg.get("contentTypes"))
-        embed.add_field(name=getLocaleString("msgType"), value=msgType, inline=False)
-        if replyRef and replyRef.get("messageId"):
-            embed.add_field(name=f"{getLocaleString('replyTo')}: {replyId}", value=f"```\n{replyContent}\n```", inline=False)
-        txtFile = None
-        if msg["content"]:
-            if len(msg["content"]) > 1024:
-                txtFile = discord.File(io.BytesIO(msg["content"].encode("utf-8")), filename=f"{msg['messageId']}_content.txt")
-                embed.add_field(name=getLocaleString("content"), value=getLocaleString("overLimit"), inline=False)
-            else:
-                embed.add_field(name=getLocaleString("content"), value=f"```\n{msg['content']}\n```", inline=False)
+        
+        layoutView = discord.ui.LayoutView()
+        container = discord.ui.Container(accent_color=colorValue)
+        
+        headerText = (
+            f"### {titleText}\n"
+            f"**{getLocaleString('author')}:** {msg.get('authorName', '')} (<@{msg['authorId']}> - `{msg['authorId']}`)\n"
+            f"**{getLocaleString('channel')}:** <#{channelId}>\n"
+            f"**{getLocaleString('sentTime')}:** {sentTimeStr}\n"
+            f"**ID:** `{msg['messageId']}`"
+        )
+        if replyId:
+            headerText += f"\n**{getLocaleString('replyTo')}:** `{replyId}`"
+
+        if msg.get("authorAvatar"):
+            container.add_item(discord.ui.Section(discord.ui.TextDisplay(headerText), accessory=discord.ui.Thumbnail(msg["authorAvatar"])))
         else:
-            embed.add_field(name=getLocaleString("content"), value=getLocaleString("noText"), inline=False)
+            container.add_item(discord.ui.TextDisplay(headerText))
+
+        msgType = determineMessageType(msg.get("content", ""), msg.get("contentTypes"))
+        bodyText = f"**{getLocaleString('msgType')}:** {msgType}"
+        if replyId and replyContent:
+            bodyText += f"\n\n**{getLocaleString('replyTo')}:** `{replyId}`\n```{replyContent}```"
+
+        txtFile = None
+        content = msg.get("content", "")
+        if content:
+            if len(content) > 1024:
+                txtFile = discord.File(io.BytesIO(content.encode("utf-8")), filename=f"{msg['messageId']}_content.txt")
+                bodyText += f"\n\n**{getLocaleString('content')}:** {getLocaleString('overLimit')}"
+            else:
+                bodyText += f"\n\n**{getLocaleString('content')}:**\n```{content}```"
+        else:
+            bodyText += f"\n\n**{getLocaleString('content')}:** {getLocaleString('noText')}"
+
+        bodyText += f"\n\n-# {getLocaleString('sentTime')}: {detectTimeStr}"
+        container.add_item(discord.ui.TextDisplay(bodyText))
 
         attachmentsList = msg.get("attachments", [])
         downloadTasks = [self.downloadAttachmentSafe(url) for url in attachmentsList]
-        downloadedBytesList = await asyncio.gather(*downloadTasks)
+        downloadedBytesList = await asyncio.gather(*downloadTasks) if downloadTasks else []
         cTypes = []
         if msg.get("contentTypes"):
             try:
@@ -298,7 +320,7 @@ class LogDispatcher:
             except Exception:
                 pass
         validFiles = []
-        if len(attachmentsList) == 1 and downloadedBytesList[0]:
+        if len(attachmentsList) == 1 and downloadedBytesList and downloadedBytesList[0]:
             fBytes = downloadedBytesList[0]
             origUrl = attachmentsList[0]
             ext = "png"
@@ -327,20 +349,44 @@ class LogDispatcher:
             isImageOrGif = ext in ['gif', 'png', 'jpg', 'jpeg', 'webp']
             if isImageOrGif:
                 cleanFilename = f"deleted_media.{ext}"
-                embed.set_image(url=f"attachment://{cleanFilename}")
+                container.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(f"attachment://{cleanFilename}")))
                 validFiles.append((cleanFilename, fBytes))
             else:
                 origFilename = origUrl.split("/")[-1].split("?")[0] or f"deleted_video.{ext}"
                 validFiles.append((origFilename, fBytes))
         else:
+            mediaItems = []
             for index, fBytes in enumerate(downloadedBytesList):
                 if fBytes:
                     origUrl = attachmentsList[index]
-                    filename = origUrl.split("/")[-1].split("?")[0] or f"file_{index}"
+                    ext = "png"
+                    if cTypes and len(cTypes) > index and cTypes[index]:
+                        ct = cTypes[index].lower()
+                        if "gif" in ct:
+                            ext = "gif"
+                        elif "jpeg" in ct or "jpg" in ct:
+                            ext = "jpg"
+                        elif "webp" in ct:
+                            ext = "webp"
+                        elif "png" in ct:
+                            ext = "png"
+                    else:
+                        urlPart = origUrl.lower().split("?")[0]
+                        for possibleExt in ['.gif', '.png', '.jpg', '.jpeg', '.webp']:
+                            if urlPart.endswith(possibleExt):
+                                ext = possibleExt.lstrip('.')
+                                break
+                    isImageOrGif = ext in ['gif', 'png', 'jpg', 'jpeg', 'webp']
+                    filename = origUrl.split("/")[-1].split("?")[0] or f"file_{index}.{ext}"
                     validFiles.append((filename, fBytes))
+                    if isImageOrGif and len(mediaItems) < 10:
+                        mediaItems.append(discord.MediaGalleryItem(f"attachment://{filename}"))
+            if mediaItems:
+                container.add_item(discord.ui.MediaGallery(*mediaItems))
         if txtFile:
             validFiles.append((txtFile.filename, txtFile.fp.read()))
-        await self.dispatchPayloadChunked(embed, validFiles)
+        layoutView.add_item(container)
+        await self.dispatchPayloadChunked(layoutView, validFiles)
 
     async def processBulkDeletePipeline(self, channelId, messagesList, reason):
         logReport = [
@@ -356,50 +402,70 @@ class LogDispatcher:
             logReport.append(getLocaleString("bulkMsgContent", content=msg['content'] or getLocaleString("empty")))
             logReport.append("-" * 40)
         reportBytes = "\n".join(logReport).encode("utf-8")
-        embed = discord.Embed(
-            title=getLocaleString("bulkTitle"),
-            color=discord.Color.dark_magenta(),
-            description=getLocaleString("bulkDesc", count=len(messagesList), channelId=channelId, reason=reason)
-        )
-        embed.set_footer(text=f"{getLocaleString('sentTime')}: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-        sent = await self.sendLogWithRetry(embed=embed, filePayloads=[(f"bulk_delete_{channelId}.txt", reportBytes)])
+        
+        layoutView = discord.ui.LayoutView()
+        container = discord.ui.Container(accent_color=discord.Color.dark_magenta())
+        currentTimeStr = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        descText = getLocaleString("bulkDesc", count=len(messagesList), channelId=channelId, reason=reason)
+        bulkContent = f"### {getLocaleString('bulkTitle')}\n\n{descText}\n\n-# {getLocaleString('sentTime')}: {currentTimeStr}"
+        container.add_item(discord.ui.TextDisplay(bulkContent))
+        layoutView.add_item(container)
+        
+        sent = await self.sendLogWithRetry(view=layoutView, filePayloads=[(f"bulk_delete_{channelId}.txt", reportBytes)])
         if not sent:
             raise RuntimeError(f"Failed to deliver bulk delete log for channel {channelId}")
 
     async def processSingleEditPipeline(self, payload):
         createdUtc = discord.utils.snowflake_time(payload["messageId"])
         sentTimeStr = createdUtc.astimezone().strftime("%d/%m/%Y %H:%M:%S")
-        descriptionText = f"{getLocaleString('author')}: <@{payload['authorId']}>\n{getLocaleString('channel')}: <#{payload['channelId']}>\n{getLocaleString('sentTime')}: {sentTimeStr}\nID: {payload['messageId']}"
+        currentTimeStr = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         isOffline = payload.get("logType") == "offlineEdit"
         titleText = f"{getLocaleString('msgEdited')} (Offline)" if isOffline else getLocaleString("msgEdited")
         colorValue = discord.Color.dark_orange() if isOffline else discord.Color.orange()
-        embed = discord.Embed(title=titleText, color=colorValue, description=descriptionText)
-        embed.set_author(name=payload["authorName"], icon_url=payload["authorAvatar"])
-        msgType = determineMessageType(payload["newContent"], payload.get("contentTypes"))
-        embed.add_field(name=getLocaleString("msgType"), value=msgType, inline=False)
-        oldContentText = payload["oldContent"]
-        newContentText = payload["newContent"]
+        
+        layoutView = discord.ui.LayoutView()
+        container = discord.ui.Container(accent_color=colorValue)
+        
+        headerText = (
+            f"### {titleText}\n"
+            f"**{getLocaleString('author')}:** {payload.get('authorName', '')} (<@{payload['authorId']}> - `{payload['authorId']}`)\n"
+            f"**{getLocaleString('channel')}:** <#{payload['channelId']}>\n"
+            f"**{getLocaleString('sentTime')}:** {sentTimeStr}\n"
+            f"**ID:** `{payload['messageId']}`"
+        )
+        if payload.get("authorAvatar"):
+            container.add_item(discord.ui.Section(discord.ui.TextDisplay(headerText), accessory=discord.ui.Thumbnail(payload["authorAvatar"])))
+        else:
+            container.add_item(discord.ui.TextDisplay(headerText))
+
+        msgType = determineMessageType(payload.get("newContent", ""), payload.get("contentTypes"))
+        bodyText = f"**{getLocaleString('msgType')}:** {msgType}"
+        oldContentText = payload.get("oldContent", "")
+        newContentText = payload.get("newContent", "")
         txtFiles = []
         if oldContentText and len(oldContentText) > 1024:
             txtFiles.append(("old_content.txt", oldContentText.encode("utf-8")))
-            embed.add_field(name=getLocaleString("beforeEdit"), value=getLocaleString("overLimit"), inline=False)
+            bodyText += f"\n\n**{getLocaleString('beforeEdit')}:** {getLocaleString('overLimit')}"
         else:
-            embed.add_field(name=getLocaleString("beforeEdit"), value=f"```\n{oldContentText or getLocaleString('empty')}\n```", inline=False)
+            bodyText += f"\n\n**{getLocaleString('beforeEdit')}:**\n```{oldContentText or getLocaleString('empty')}```"
         if newContentText and len(newContentText) > 1024:
             txtFiles.append(("new_content.txt", newContentText.encode("utf-8")))
-            embed.add_field(name=getLocaleString("afterEdit"), value=getLocaleString("overLimit"), inline=False)
+            bodyText += f"\n\n**{getLocaleString('afterEdit')}:** {getLocaleString('overLimit')}"
         else:
-            embed.add_field(name=getLocaleString("afterEdit"), value=f"```\n{newContentText or getLocaleString('empty')}\n```", inline=False)
-        embed.set_footer(text=f"{getLocaleString('sentTime')}: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-        sent = await self.sendLogWithRetry(embed=embed, filePayloads=txtFiles if txtFiles else None)
+            bodyText += f"\n\n**{getLocaleString('afterEdit')}:**\n```{newContentText or getLocaleString('empty')}```"
+        bodyText += f"\n\n-# {getLocaleString('sentTime')}: {currentTimeStr}"
+        container.add_item(discord.ui.TextDisplay(bodyText))
+        layoutView.add_item(container)
+        
+        sent = await self.sendLogWithRetry(view=layoutView, filePayloads=txtFiles if txtFiles else None)
         if not sent:
             raise RuntimeError(f"Failed to deliver edit log for message {payload.get('messageId')}")
 
-    async def dispatchPayloadChunked(self, embed, validFiles):
+    async def dispatchPayloadChunked(self, view, validFiles):
         if not validFiles:
-            sent = await self.sendLogWithRetry(embed=embed)
+            sent = await self.sendLogWithRetry(view=view)
             if not sent:
-                raise RuntimeError("Failed to deliver log embed")
+                raise RuntimeError("Failed to deliver log view")
             return
         currentChunk = []
         currentChunkSize = 0
@@ -409,24 +475,23 @@ class LogDispatcher:
         for filename, fBytes in validFiles:
             fSize = len(fBytes)
             if fSize > maxBytesPerMsg:
-                embed.add_field(name=getLocaleString("sysWarning"), value=getLocaleString("fileSizeError", filename=filename), inline=False)
                 continue
             if len(currentChunk) >= maxFilesPerMsg or (currentChunkSize + fSize) > maxBytesPerMsg:
-                await self.sendChunk(embed if isFirstMessage else None, currentChunk)
+                await self.sendChunk(view if isFirstMessage else None, currentChunk)
                 isFirstMessage = False
                 currentChunk = []
                 currentChunkSize = 0
             currentChunk.append((filename, fBytes))
             currentChunkSize += fSize
         if currentChunk:
-            await self.sendChunk(embed if isFirstMessage else None, currentChunk)
+            await self.sendChunk(view if isFirstMessage else None, currentChunk)
 
-    async def sendChunk(self, embed, filePayloads):
-        sent = await self.sendLogWithRetry(embed=embed, filePayloads=filePayloads)
+    async def sendChunk(self, view, filePayloads):
+        sent = await self.sendLogWithRetry(view=view, filePayloads=filePayloads)
         if not sent:
             raise RuntimeError("Failed to deliver log chunk")
 
-    async def sendLogWithRetry(self, embed=None, filePayloads=None):
+    async def sendLogWithRetry(self, view=None, filePayloads=None):
         logChannel = self.bot.get_channel(config.logChannelId)
         if not logChannel:
             return False
@@ -436,10 +501,12 @@ class LogDispatcher:
                 files = None
                 if filePayloads:
                     files = [discord.File(io.BytesIO(b), filename=n) for n, b in filePayloads]
-                if files:
-                    await asyncio.wait_for(logChannel.send(embed=embed, files=files), timeout=15)
-                else:
-                    await asyncio.wait_for(logChannel.send(embed=embed), timeout=15)
+                if files and view:
+                    await asyncio.wait_for(logChannel.send(view=view, files=files), timeout=15)
+                elif files:
+                    await asyncio.wait_for(logChannel.send(files=files), timeout=15)
+                elif view:
+                    await asyncio.wait_for(logChannel.send(view=view), timeout=15)
                 return True
             except discord.Forbidden:
                 logger.error("Permanent Error: Missing Permissions / Forbidden to send log messages.")
