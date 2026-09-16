@@ -394,71 +394,43 @@ class BotEvents:
             watchdogStatus = getLocaleString("healthyStatus") if watchdogHealthy else getLocaleString("warningStatus")
             schedType = getattr(config, "reportTaskSched", "hourly")
             scheduleText = getLocaleString("reportScheduleHourlyValue") if schedType == "hourly" else getLocaleString("reportScheduleDailyValue")
-            embedStatus = discord.Embed(
-                title=getLocaleString("statsTitle"),
-                color=discord.Color.blue(),
-                timestamp=datetime.now()
+            statsView = discord.ui.LayoutView()
+            statsContainer = discord.ui.Container()
+            statsContent = (
+                f"### {getLocaleString('statsTitle')}\n\n"
+                f"**{getLocaleString('generalSection')}**\n"
+                f"• **{getLocaleString('uptimeField')}:** {uptimeText}\n"
+                f"• **{getLocaleString('botField')}:** {self.bot.user.name} (`{self.bot.user.id}`)\n"
+                f"• **{getLocaleString('scheduleField')}:** {scheduleText}\n"
+                f"• **{getLocaleString('watchdogField')}:** {watchdogStatus}\n\n"
+                f"**{getLocaleString('dbSection')}**\n"
+                f"• **{getLocaleString('dbStatus')}:** {dbConnectedStatus.split(':')[-1].strip() if ':' in dbConnectedStatus else dbConnectedStatus}\n"
+                f"• **{getLocaleString('dbFileSize')}:** {dbSizeText}\n"
+                f"• **{getLocaleString('loadedMsgs')}:** {loadedMessagesCount:,}\n"
+                f"• **{getLocaleString('queueField')}:** {dbQueueSize}/{config.maxDbQueueSize}\n\n"
+                f"**{getLocaleString('activitySection')}**\n"
+                f"• **{getLocaleString('newField')}:** {self.bot.totalNewMessages:,}\n"
+                f"• **{getLocaleString('editedField')}:** {self.bot.totalEditedMessages:,}\n"
+                f"• **{getLocaleString('deletedField')}:** {self.bot.totalDeletedMessages:,}\n"
+                f"• **{getLocaleString('logQueueField')}:** {logQueueSize}/{config.maxLogQueueSize}\n\n"
+                f"**{getLocaleString('startupScanSection')}**\n"
+                f"• **{getLocaleString('progressField')}:** {scanCompleted}/{scanTotal} ({scanPercent:.1f}%)\n"
+                f"• **{getLocaleString('bootScannedField')}:** {self.bot.currentBootScanned:,}\n"
+                f"• **{getLocaleString('scanTimeField')}:** {totalScanTimeStr}\n"
+                f"• **{getLocaleString('oldestMsgField')}:** {oldestDateStr}\n\n"
+                f"**{getLocaleString('serverStats')}**\n"
+                f"• **{getLocaleString('monitoredChannelsField')}:** {monitoredChannelsCount}\n"
+                f"• **{getLocaleString('totalMembersField')}:** {totalMembersCount}\n"
+                f"• **{getLocaleString('ramUsageField')}:** {ramUsageMb:.2f} MB\n\n"
+                f"**{getLocaleString('runtimeSection')}**\n"
+                f"• **{getLocaleString('retriesField')}:** {self.metricsTracker.retryCount:,}\n"
+                f"• **{getLocaleString('droppedField')}:** {self.metricsTracker.queueDroppedCount:,}\n"
+                f"• **{getLocaleString('throughputField')}:** {self.metricsTracker.currentThroughputRps:.2f}/s\n\n"
+                f"-# {getLocaleString('statsFooter')}"
             )
-            embedStatus.add_field(
-                name=getLocaleString("generalSection"),
-                value=(
-                    f"**{getLocaleString('uptimeField')}:** {uptimeText}\n"
-                    f"**{getLocaleString('botField')}:** {self.bot.user.name} (`{self.bot.user.id}`)\n"
-                    f"**{getLocaleString('scheduleField')}:** {scheduleText}\n"
-                    f"**{getLocaleString('watchdogField')}:** {watchdogStatus}"
-                ),
-                inline=False
-            )
-            embedStatus.add_field(
-                name=getLocaleString("dbSection"),
-                value=(
-                    f"**{getLocaleString('dbStatus')}:** {dbConnectedStatus.split(':')[-1].strip() if ':' in dbConnectedStatus else dbConnectedStatus}\n"
-                    f"**{getLocaleString('dbFileSize')}:** {dbSizeText}\n"
-                    f"**{getLocaleString('loadedMsgs')}:** {loadedMessagesCount:,}\n"
-                    f"**{getLocaleString('queueField')}:** {dbQueueSize}/{config.maxDbQueueSize}"
-                ),
-                inline=True
-            )
-            embedStatus.add_field(
-                name=getLocaleString("activitySection"),
-                value=(
-                    f"**{getLocaleString('newField')}:** {self.bot.totalNewMessages:,}\n"
-                    f"**{getLocaleString('editedField')}:** {self.bot.totalEditedMessages:,}\n"
-                    f"**{getLocaleString('deletedField')}:** {self.bot.totalDeletedMessages:,}\n"
-                    f"**{getLocaleString('logQueueField')}:** {logQueueSize}/{config.maxLogQueueSize}"
-                ),
-                inline=True
-            )
-            embedStatus.add_field(
-                name=getLocaleString("startupScanSection"),
-                value=(
-                    f"**{getLocaleString('progressField')}:** {scanCompleted}/{scanTotal} ({scanPercent:.1f}%)\n"
-                    f"**{getLocaleString('bootScannedField')}:** {self.bot.currentBootScanned:,}\n"
-                    f"**{getLocaleString('scanTimeField')}:** {totalScanTimeStr}\n"
-                    f"**{getLocaleString('oldestMsgField')}:** {oldestDateStr}"
-                ),
-                inline=False
-            )
-            embedStatus.add_field(
-                name=getLocaleString("serverStats"),
-                value=(
-                    f"**{getLocaleString('monitoredChannelsField')}:** {monitoredChannelsCount}\n"
-                    f"**{getLocaleString('totalMembersField')}:** {totalMembersCount}\n"
-                    f"**{getLocaleString('ramUsageField')}:** {ramUsageMb:.2f} MB"
-                ),
-                inline=True
-            )
-            embedStatus.add_field(
-                name=getLocaleString("runtimeSection"),
-                value=(
-                    f"**{getLocaleString('retriesField')}:** {self.metricsTracker.retryCount:,}\n"
-                    f"**{getLocaleString('droppedField')}:** {self.metricsTracker.queueDroppedCount:,}\n"
-                    f"**{getLocaleString('throughputField')}:** {self.metricsTracker.currentThroughputRps:.2f}/s"
-                ),
-                inline=True
-            )
-            embedStatus.set_footer(text=getLocaleString("statsFooter"))
-            await interaction.followup.send(embed=embedStatus)
+            statsContainer.add_item(discord.ui.TextDisplay(statsContent))
+            statsView.add_item(statsContainer)
+            await interaction.followup.send(view=statsView)
 
         @self.bot.tree.command(name="gethealth", description=getLocaleString("healthDescription"), guild=discord.Object(id=config.targetGuildId))
         async def getHealthCommand(interaction: discord.Interaction):
@@ -479,51 +451,43 @@ class BotEvents:
             for taskName in expectedTasks:
                 lastBeat = self.bot.watchdog.lastHeartbeats.get(taskName)
                 if lastBeat is None:
-                    heartbeatLines.append(f"**{taskName}:** {getLocaleString('noHeartbeatStatus')}")
+                    heartbeatLines.append(f"• **{taskName}:** {getLocaleString('noHeartbeatStatus')}")
                     continue
                 age = nowPerf - lastBeat
                 status = getLocaleString("okStatus") if age <= 60 else getLocaleString("staleStatus")
-                heartbeatLines.append(f"**{taskName}:** {status} ({getLocaleString('heartbeatAgeSuffix', value=age)})")
+                heartbeatLines.append(f"• **{taskName}:** {status} ({getLocaleString('heartbeatAgeSuffix', value=age)})")
 
             logWorkerStates = [taskState(task) for task in self.bot.logDispatcher.workerTasks]
             taskLines = [
-                f"**{getLocaleString('watchdogField')}:** {taskState(self.bot.watchdog.watchdogTask)}",
-                f"**{getLocaleString('metricsTaskField')}:** {taskState(self.bot.metricsTask)}",
-                f"**{getLocaleString('periodicReportTaskField')}:** {taskState(self.bot.periodicTask)}",
-                f"**{getLocaleString('databaseWorkerField')}:** {taskState(self.bot.databaseManager.workerTask)}",
-                f"**{getLocaleString('mediaCacheTaskField')}:** {taskState(self.bot.mediaManager.cacheTask)}",
-                f"**{getLocaleString('logWorkersField')}:** {', '.join(logWorkerStates) if logWorkerStates else getLocaleString('taskMissing')}"
+                f"• **{getLocaleString('watchdogField')}:** {taskState(self.bot.watchdog.watchdogTask)}",
+                f"• **{getLocaleString('metricsTaskField')}:** {taskState(self.bot.metricsTask)}",
+                f"• **{getLocaleString('periodicReportTaskField')}:** {taskState(self.bot.periodicTask)}",
+                f"• **{getLocaleString('databaseWorkerField')}:** {taskState(self.bot.databaseManager.workerTask)}",
+                f"• **{getLocaleString('mediaCacheTaskField')}:** {taskState(self.bot.mediaManager.cacheTask)}",
+                f"• **{getLocaleString('logWorkersField')}:** {', '.join(logWorkerStates) if logWorkerStates else getLocaleString('taskMissing')}"
             ]
 
-            embedHealth = discord.Embed(
-                title=getLocaleString("healthTitle"),
-                color=discord.Color.green(),
-                timestamp=datetime.now()
+            healthView = discord.ui.LayoutView()
+            healthContainer = discord.ui.Container()
+            healthContent = (
+                f"### {getLocaleString('healthTitle')}\n\n"
+                f"**{getLocaleString('heartbeatsSection')}**\n" + "\n".join(heartbeatLines) + "\n\n"
+                f"**{getLocaleString('tasksSection')}**\n" + "\n".join(taskLines) + "\n\n"
+                f"**{getLocaleString('queuesSection')}**\n"
+                f"• **{getLocaleString('databaseShortField')}:** {self.bot.databaseManager.dbQueue.qsize()}/{config.maxDbQueueSize}\n"
+                f"• **{getLocaleString('logShortField')}:** {self.bot.logDispatcher.logQueue.qsize()}/{config.maxLogQueueSize}\n"
+                f"• **{getLocaleString('retriesField')}:** {self.metricsTracker.retryCount:,}\n"
+                f"• **{getLocaleString('droppedField')}:** {self.metricsTracker.queueDroppedCount:,}\n\n"
+                f"**{getLocaleString('latencySection')}**\n"
+                f"• **{getLocaleString('databaseShortField')}:** {self.metricsTracker.dbLatencyEwma * 1000:.2f} ms\n"
+                f"• **{getLocaleString('sendLatencyField')}:** {self.metricsTracker.sendLatencyEwma * 1000:.2f} ms\n"
+                f"• **{getLocaleString('downloadLatencyField')}:** {self.metricsTracker.downloadTimeEwma * 1000:.2f} ms\n"
+                f"• **{getLocaleString('throughputField')}:** {self.metricsTracker.currentThroughputRps:.2f}/s\n\n"
+                f"-# {getLocaleString('statsFooter')}"
             )
-            embedHealth.add_field(name=getLocaleString("heartbeatsSection"), value="\n".join(heartbeatLines), inline=False)
-            embedHealth.add_field(name=getLocaleString("tasksSection"), value="\n".join(taskLines), inline=False)
-            embedHealth.add_field(
-                name=getLocaleString("queuesSection"),
-                value=(
-                    f"**{getLocaleString('databaseShortField')}:** {self.bot.databaseManager.dbQueue.qsize()}/{config.maxDbQueueSize}\n"
-                    f"**{getLocaleString('logShortField')}:** {self.bot.logDispatcher.logQueue.qsize()}/{config.maxLogQueueSize}\n"
-                    f"**{getLocaleString('retriesField')}:** {self.metricsTracker.retryCount:,}\n"
-                    f"**{getLocaleString('droppedField')}:** {self.metricsTracker.queueDroppedCount:,}"
-                ),
-                inline=True
-            )
-            embedHealth.add_field(
-                name=getLocaleString("latencySection"),
-                value=(
-                    f"**{getLocaleString('databaseShortField')}:** {self.metricsTracker.dbLatencyEwma * 1000:.2f} ms\n"
-                    f"**{getLocaleString('sendLatencyField')}:** {self.metricsTracker.sendLatencyEwma * 1000:.2f} ms\n"
-                    f"**{getLocaleString('downloadLatencyField')}:** {self.metricsTracker.downloadTimeEwma * 1000:.2f} ms\n"
-                    f"**{getLocaleString('throughputField')}:** {self.metricsTracker.currentThroughputRps:.2f}/s"
-                ),
-                inline=True
-            )
-            embedHealth.set_footer(text=getLocaleString("statsFooter"))
-            await interaction.followup.send(embed=embedHealth)
+            healthContainer.add_item(discord.ui.TextDisplay(healthContent))
+            healthView.add_item(healthContainer)
+            await interaction.followup.send(view=healthView)
 
         @self.bot.tree.command(name="getreport", description=getLocaleString("reportDescription"), guild=discord.Object(id=config.targetGuildId))
         async def getReportCommand(interaction: discord.Interaction):
