@@ -296,14 +296,10 @@ class LogDispatcher:
         if replyId and replyContent:
             bodyText += f"\n\n**{getLocaleString('replyTo')}:** `{replyId}`\n```{replyContent}```"
 
-        txtFiles = []
         content = msg.get("content", "")
         if content:
-            if len(content) > 1024:
-                txtFiles.append((f"{msg['messageId']}_content.txt", content.encode("utf-8")))
-                bodyText += f"\n\n**{getLocaleString('content')}:** {getLocaleString('overLimit')}"
-            else:
-                bodyText += f"\n\n**{getLocaleString('content')}:**\n```{content}```"
+            displayContent = content if len(content) <= 3500 else content[:3500] + "..."
+            bodyText += f"\n\n**{getLocaleString('content')}:**\n```{displayContent}```"
         else:
             bodyText += f"\n\n**{getLocaleString('content')}:** {getLocaleString('noText')}"
 
@@ -383,10 +379,9 @@ class LogDispatcher:
                         mediaItems.append(discord.MediaGalleryItem(f"attachment://{filename}"))
             if mediaItems:
                 container.add_item(discord.ui.MediaGallery(*mediaItems))
-        if txtFiles:
-            validFiles.extend(txtFiles)
         layoutView.add_item(container)
         await self.dispatchPayloadChunked(layoutView, validFiles)
+
 
     async def processBulkDeletePipeline(self, channelId, messagesList, reason):
         logReport = [
@@ -442,22 +437,15 @@ class LogDispatcher:
         bodyText = f"**{getLocaleString('msgType')}:** {msgType}"
         oldContentText = payload.get("oldContent", "")
         newContentText = payload.get("newContent", "")
-        txtFiles = []
-        if oldContentText and len(oldContentText) > 1024:
-            txtFiles.append(("old_content.txt", oldContentText.encode("utf-8")))
-            bodyText += f"\n\n**{getLocaleString('beforeEdit')}:** {getLocaleString('overLimit')}"
-        else:
-            bodyText += f"\n\n**{getLocaleString('beforeEdit')}:**\n```{oldContentText or getLocaleString('empty')}```"
-        if newContentText and len(newContentText) > 1024:
-            txtFiles.append(("new_content.txt", newContentText.encode("utf-8")))
-            bodyText += f"\n\n**{getLocaleString('afterEdit')}:** {getLocaleString('overLimit')}"
-        else:
-            bodyText += f"\n\n**{getLocaleString('afterEdit')}:**\n```{newContentText or getLocaleString('empty')}```"
+        displayOld = oldContentText if len(oldContentText) <= 1700 else oldContentText[:1700] + "..."
+        displayNew = newContentText if len(newContentText) <= 1700 else newContentText[:1700] + "..."
+        bodyText += f"\n\n**{getLocaleString('beforeEdit')}:**\n```{displayOld or getLocaleString('empty')}```"
+        bodyText += f"\n\n**{getLocaleString('afterEdit')}:**\n```{displayNew or getLocaleString('empty')}```"
         bodyText += f"\n\n-# {getLocaleString('sentTime')}: {currentTimeStr}"
         container.add_item(discord.ui.TextDisplay(bodyText))
         layoutView.add_item(container)
         
-        sent = await self.sendLogWithRetry(view=layoutView, filePayloads=txtFiles if txtFiles else None)
+        sent = await self.sendLogWithRetry(view=layoutView)
         if not sent:
             raise RuntimeError(f"Failed to deliver edit log for message {payload.get('messageId')}")
 
