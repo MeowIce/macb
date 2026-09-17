@@ -83,6 +83,19 @@ class StartupScanner:
             
         scanSemaphore = asyncio.Semaphore(config.maxParallelScans)
         workerCount = min(config.maxParallelScans, 28)
+        scanDoneEvent = asyncio.Event()
+
+        async def progressTicker():
+            while not scanDoneEvent.is_set():
+                elapsed = max(time.perf_counter() - startTime, 0.001)
+                speed = self.bot.currentBootScanned / elapsed
+                print(f"{getLocaleString('channelsProgressStr', completed=self.channelsCompleted, total=self.totalChannels, count=self.bot.currentBootScanned, speed=speed):<75}", end="", flush=True)
+                try:
+                    await asyncio.wait_for(scanDoneEvent.wait(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    pass
+
+        tickerTask = asyncio.create_task(progressTicker())
         
         async def worker():
             while not channelQueue.empty():
@@ -96,7 +109,12 @@ class StartupScanner:
                 
         workers = [asyncio.create_task(worker()) for _ in range(workerCount)]
         await asyncio.gather(*workers)
+        scanDoneEvent.set()
+        await tickerTask
         
+        elapsed = max(time.perf_counter() - startTime, 0.001)
+        speed = self.bot.currentBootScanned / elapsed
+        print(f"{getLocaleString('channelsProgressStr', completed=self.channelsCompleted, total=self.totalChannels, count=self.bot.currentBootScanned, speed=speed):<75}", end="", flush=True)
         print()
         duration = time.perf_counter() - startTime
         self.bot.totalScanTimeStr = f"{duration:.2f}"
@@ -131,6 +149,7 @@ class StartupScanner:
                     if msg.author.bot:
                         continue
                     localMsgCount += 1
+                    self.bot.currentBootScanned += 1
                     msgTuple = extractScanTuple(msg, channel)
                     chunkTuples.append(msgTuple)
                     if self.bot.globalOldestDate is None or msg.created_at < self.bot.globalOldestDate:
@@ -147,6 +166,7 @@ class StartupScanner:
                 if msg.author.bot:
                     continue
                 localMsgCount += 1
+                self.bot.currentBootScanned += 1
                 fetchedMessagesList.append(msg)
 
             if maxLocalId:
@@ -154,7 +174,9 @@ class StartupScanner:
                     if extraMsg.author.bot:
                         continue
                     localMsgCount += 1
+                    self.bot.currentBootScanned += 1
                     fetchedMessagesList.append(extraMsg)
+
 
             if not fetchedMessagesList:
                 return
@@ -315,11 +337,4 @@ class StartupScanner:
             logger.error(f"Error scanning channel history for {channel.id}: {str(scanEx)}")
         finally:
             self.channelsCompleted += 1
-            self.bot.currentBootScanned += localMsgCount
-            currentTime = time.perf_counter()
-            if currentTime - self.lastLogTime >= 0.25 or self.channelsCompleted == self.totalChannels:
-                self.lastLogTime = currentTime
-                bootTimeDiff = getattr(self.bot, "bootTime", None)
-                bootSeconds = (datetime.now() - bootTimeDiff).total_seconds() if bootTimeDiff else 1.0
-                speed = self.bot.currentBootScanned / bootSeconds
-                print(f"{getLocaleString('channelsProgressStr', completed=self.channelsCompleted, total=self.totalChannels, count=self.bot.currentBootScanned, speed=speed)}   ", end="", flush=True)
+

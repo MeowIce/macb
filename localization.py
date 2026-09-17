@@ -230,7 +230,7 @@ stringsMap = {
         "msgCountSuffix": "{count} messages",
         "loadingDbFirst": "Populating message data into database for the first time... (this process may take a few seconds or minutes).",
         "loadingDbSync": "Checking and synchronizing message data with the server... (this process may take a few seconds or minutes).",
-        "channelsProgressStr": "\nChannels: {completed}/{total} | Processed: {count} messages | Speed: {speed:.2f} messages/sec",
+        "channelsProgressStr": "\rChannels: {completed}/{total} | Processed: {count} messages | Speed: {speed:.2f} messages/sec",
         "scanCompleteFirstStr": "Successfully loaded {count} messages into the database in {time} seconds",
         "scanCompleteSyncStr": "Successfully synchronized {count} messages in {time} seconds",
         "oldestMsgStr": "Oldest message time: {date}",
