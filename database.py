@@ -356,7 +356,8 @@ class DatabaseManager:
             cursor.close()
             cacheMap = {}
             for row in rows:
-                cacheMap[row[7]] = row[:7]
+                if row[7] is not None:
+                    cacheMap[row[7]] = row[:7]
             return cacheMap
         except Exception as ex:
             logger.error(f"Error reading messages from ID {minId} for channel {channelId}: {str(ex)}")

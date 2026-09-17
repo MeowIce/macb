@@ -255,13 +255,25 @@ class LogDispatcher:
                 return None
 
     async def processSingleDeletePipeline(self, channelId, msg, replyCache):
-        createdUtc = discord.utils.snowflake_time(msg["messageId"])
+        if not isinstance(msg, dict):
+            logger.warning("Dropping singleDelete log with non-dict message data")
+            return
+        rawMsgId = msg.get("messageId")
+        if not rawMsgId:
+            logger.warning(f"Dropping singleDelete log with missing messageId: {msg}")
+            return
+        try:
+            msgId = int(rawMsgId)
+        except (ValueError, TypeError):
+            logger.warning(f"Dropping singleDelete log with invalid messageId: {rawMsgId}")
+            return
+        createdUtc = discord.utils.snowflake_time(msgId)
         sentTimeStr = createdUtc.astimezone().strftime("%d/%m/%Y %H:%M:%S")
         detectTimeStr = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         replyRef = msg.get("replyReference")
         replyId = None
         replyContent = None
-        if replyRef and replyRef.get("messageId"):
+        if replyRef and isinstance(replyRef, dict) and replyRef.get("messageId"):
             replyId = replyRef["messageId"]
             replyData = replyCache.get(replyId)
             replyContent = replyData[9] if replyData else getLocaleString("noDbContent")
@@ -276,12 +288,13 @@ class LogDispatcher:
         layoutView = discord.ui.LayoutView(timeout=None)
         container = discord.ui.Container(accent_color=colorValue)
         
+        authorIdStr = f"<@{msg['authorId']}> - `{msg['authorId']}`" if msg.get("authorId") else getLocaleString("unknown")
         headerText = (
             f"### {titleText}\n"
-            f"**{getLocaleString('author')}:** {msg.get('authorName', '')} (<@{msg['authorId']}> - `{msg['authorId']}`)\n"
+            f"**{getLocaleString('author')}:** {msg.get('authorName', '')} ({authorIdStr})\n"
             f"**{getLocaleString('channel')}:** <#{channelId}>\n"
             f"**{getLocaleString('sentTime')}:** {sentTimeStr}\n"
-            f"**ID:** `{msg['messageId']}`"
+            f"**ID:** `{msgId}`"
         )
         if replyId and not replyContent:
             headerText += f"\n**{getLocaleString('replyTo')}:** `{replyId}`"
@@ -390,11 +403,24 @@ class LogDispatcher:
             getLocaleString("bulkDetectTime", time=datetime.now().strftime('%d/%m/%Y %H:%M:%S')) + "\n"
         ]
         for msg in messagesList:
-            createdUtc = discord.utils.snowflake_time(msg["messageId"])
-            sentTimeStr = createdUtc.astimezone().strftime("%d/%m/%Y %H:%M:%S")
-            logReport.append(getLocaleString("bulkMsgAuthor", time=sentTimeStr, authorId=msg['authorId'], name=msg['authorName']))
-            logReport.append(getLocaleString("bulkMsgId", id=msg['messageId']))
-            logReport.append(getLocaleString("bulkMsgContent", content=msg['content'] or getLocaleString("empty")))
+            rawMsgId = msg.get("messageId") if isinstance(msg, dict) else None
+            msgId = 0
+            if rawMsgId:
+                try:
+                    msgId = int(rawMsgId)
+                except (ValueError, TypeError):
+                    msgId = 0
+            if msgId:
+                createdUtc = discord.utils.snowflake_time(msgId)
+                sentTimeStr = createdUtc.astimezone().strftime("%d/%m/%Y %H:%M:%S")
+            else:
+                sentTimeStr = getLocaleString("unknown")
+            authorIdVal = msg.get('authorId') if isinstance(msg, dict) else 0
+            authorNameVal = msg.get('authorName', '') if isinstance(msg, dict) else ''
+            contentVal = msg.get('content') if isinstance(msg, dict) else ''
+            logReport.append(getLocaleString("bulkMsgAuthor", time=sentTimeStr, authorId=authorIdVal, name=authorNameVal))
+            logReport.append(getLocaleString("bulkMsgId", id=msgId if msgId else getLocaleString("unknown")))
+            logReport.append(getLocaleString("bulkMsgContent", content=contentVal or getLocaleString("empty")))
             logReport.append("-" * 40)
         reportBytes = "\n".join(logReport).encode("utf-8")
         
@@ -411,7 +437,19 @@ class LogDispatcher:
             raise RuntimeError(f"Failed to deliver bulk delete log for channel {channelId}")
 
     async def processSingleEditPipeline(self, payload):
-        createdUtc = discord.utils.snowflake_time(payload["messageId"])
+        if not isinstance(payload, dict):
+            logger.warning("Dropping edit log with non-dict payload")
+            return
+        rawMsgId = payload.get("messageId")
+        if not rawMsgId:
+            logger.warning(f"Dropping edit log with missing messageId: {payload}")
+            return
+        try:
+            msgId = int(rawMsgId)
+        except (ValueError, TypeError):
+            logger.warning(f"Dropping edit log with invalid messageId: {rawMsgId}")
+            return
+        createdUtc = discord.utils.snowflake_time(msgId)
         sentTimeStr = createdUtc.astimezone().strftime("%d/%m/%Y %H:%M:%S")
         currentTimeStr = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         isOffline = payload.get("logType") == "offlineEdit"
@@ -421,13 +459,15 @@ class LogDispatcher:
         layoutView = discord.ui.LayoutView(timeout=None)
         container = discord.ui.Container(accent_color=colorValue)
         
+        authorIdStr = f"<@{payload['authorId']}> - `{payload['authorId']}`" if payload.get("authorId") else getLocaleString("unknown")
         headerText = (
             f"### {titleText}\n"
-            f"**{getLocaleString('author')}:** {payload.get('authorName', '')} (<@{payload['authorId']}> - `{payload['authorId']}`)\n"
-            f"**{getLocaleString('channel')}:** <#{payload['channelId']}>\n"
+            f"**{getLocaleString('author')}:** {payload.get('authorName', '')} ({authorIdStr})\n"
+            f"**{getLocaleString('channel')}:** <#{payload.get('channelId')}>\n"
             f"**{getLocaleString('sentTime')}:** {sentTimeStr}\n"
-            f"**ID:** `{payload['messageId']}`"
+            f"**ID:** `{msgId}`"
         )
+
         if payload.get("authorAvatar"):
             container.add_item(discord.ui.Section(discord.ui.TextDisplay(headerText), accessory=discord.ui.Thumbnail(payload["authorAvatar"])))
         else:

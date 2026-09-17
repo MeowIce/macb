@@ -63,8 +63,12 @@ class StartupScanner:
             print(getLocaleString("loadingDbSync"))
             
         if oldestId:
-            timestampMs = (oldestId >> 22) + 1420070400000
-            self.bot.globalOldestDate = datetime.fromtimestamp(timestampMs / 1000, tz=timezone.utc)
+            try:
+                oldestInt = int(oldestId)
+                timestampMs = (oldestInt >> 22) + 1420070400000
+                self.bot.globalOldestDate = datetime.fromtimestamp(timestampMs / 1000, tz=timezone.utc)
+            except Exception:
+                pass
             
         textChannels = [ch for ch in guild.text_channels if ch.permissions_for(guild.me).read_message_history]
         self.bot.totalCachedMessages = 0
@@ -232,7 +236,7 @@ class StartupScanner:
             if maxLocalId and localCacheMap:
                 activeLiveIds = set(getattr(self.bot.botEvents, "activeLiveEventMessageIds", []))
                 for cId in localCacheMap.keys():
-                    if cId not in fetchedIdsSet and cId not in activeLiveIds:
+                    if cId and cId not in fetchedIdsSet and cId not in activeLiveIds:
                         dbRow = localCacheMap[cId]
                         attachmentsList = []
                         try:
