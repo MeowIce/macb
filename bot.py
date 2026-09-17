@@ -347,7 +347,7 @@ class MACB(commands.Bot):
         reportContainer = discord.ui.Container(accent_color=discord.Color.blue())
         reportContainer.add_item(discord.ui.TextDisplay(f"### {titleText}\n\n{descriptionContent}"))
         reportView.add_item(reportContainer)
-        await logChannel.send(view=reportView)
+        await logChannel.send(view=reportView, allowed_mentions=discord.AllowedMentions.none(), silent=True)
         
         consoleDivider = "=" * 55
         consoleReportBlock = (

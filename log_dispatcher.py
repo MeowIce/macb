@@ -498,17 +498,18 @@ class LogDispatcher:
         if not logChannel:
             return False
         maxRetries = 3
+        allowedMentions = discord.AllowedMentions.none()
         for attempt in range(maxRetries):
             try:
                 files = None
                 if filePayloads:
                     files = [discord.File(io.BytesIO(b), filename=n) for n, b in filePayloads]
                 if files and view:
-                    await asyncio.wait_for(logChannel.send(view=view, files=files), timeout=15)
+                    await asyncio.wait_for(logChannel.send(view=view, files=files, allowed_mentions=allowedMentions, silent=True), timeout=15)
                 elif files:
-                    await asyncio.wait_for(logChannel.send(files=files), timeout=15)
+                    await asyncio.wait_for(logChannel.send(files=files, allowed_mentions=allowedMentions, silent=True), timeout=15)
                 elif view:
-                    await asyncio.wait_for(logChannel.send(view=view), timeout=15)
+                    await asyncio.wait_for(logChannel.send(view=view, allowed_mentions=allowedMentions, silent=True), timeout=15)
                 return True
             except discord.Forbidden:
                 logger.error("Permanent Error: Missing Permissions / Forbidden to send log messages.")
